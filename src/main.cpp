@@ -20,7 +20,15 @@
 
 namespace {
 constexpr unsigned long kSampleIntervalMs = 50;
-constexpr unsigned long kReconnectIntervalMs = 5000;
+// Long enough that an association already in progress is not restarted; the
+// Wi-Fi stack's own auto-reconnect handles the common case on its own.
+constexpr unsigned long kReconnectIntervalMs = 10000;
+
+// WiFi.RSSI() returns 0 when the radio has no valid measurement yet, which
+// happens for a moment right after associating. Sending that would look like a
+// 57 dB jump to the browser and trigger a false MOTION, so it is filtered here.
+constexpr int kMinValidRssi = -120;
+constexpr int kMaxValidRssi = -1;
 
 unsigned long lastSampleAt = 0;
 unsigned long lastReconnectAttemptAt = 0;
@@ -35,6 +43,14 @@ void beginWifiConnection(const char *message) {
 
 void setup() {
   Serial.begin(115200);
+
+#if ARDUINO_USB_CDC_ON_BOOT
+  // Native USB CDC: without this, a write blocks while the host is not draining
+  // the buffer (browser tab throttled, port closed). Dropping a sample is always
+  // better than stalling the loop that keeps Wi-Fi alive.
+  Serial.setTxTimeoutMs(0);
+#endif
+
   delay(500);
 
   Serial.println("INFO,Wi-Fi RSSI Motion Detector v0");
@@ -47,6 +63,8 @@ void setup() {
 }
 
 void loop() {
+  // Unsigned subtraction keeps this comparison correct across the ~49 day
+  // millis() rollover, so no special case is needed.
   const unsigned long now = millis();
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -61,9 +79,12 @@ void loop() {
     if (now - lastSampleAt >= kSampleIntervalMs) {
       lastSampleAt = now;
 
-      // A small machine-readable format keeps browser parsing reliable.
-      Serial.print("RSSI,");
-      Serial.println(WiFi.RSSI());
+      const int rssi = WiFi.RSSI();
+      if (rssi >= kMinValidRssi && rssi <= kMaxValidRssi) {
+        // A small machine-readable format keeps browser parsing reliable.
+        Serial.print("RSSI,");
+        Serial.println(rssi);
+      }
     }
     return;
   }

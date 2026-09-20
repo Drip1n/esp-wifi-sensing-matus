@@ -416,13 +416,19 @@
         <details class="diagnostics">
           <summary>Diagnostics</summary>
           <div class="diagnostics-body">
-            <div class="diag-row"><span>Pipeline stage</span><span id="diagStage">Not connected</span></div>
+            <div class="diag-row"><span>Connection state</span><span id="diagState">DISCONNECTED</span></div>
+            <div class="diag-row"><span>Port reference</span><span id="diagPort">NO</span></div>
+            <div class="diag-row"><span>Port readable</span><span id="diagReadable">NO</span></div>
+            <div class="diag-row"><span>Reader active</span><span id="diagReader">NO</span></div>
+            <div class="diag-row"><span>Read loop active</span><span id="diagLoop">NO</span></div>
+            <div class="diag-row"><span>DTR/RTS</span><span id="diagSignals">UNKNOWN</span></div>
             <div class="diag-row"><span>Bytes received</span><span id="diagBytes">0</span></div>
             <div class="diag-row"><span>Lines received</span><span id="diagLines">0</span></div>
             <div class="diag-row"><span>RSSI samples parsed</span><span id="diagSamples">0</span></div>
-            <div class="diag-row"><span>Last sample age</span><span id="diagLastSample">—</span></div>
-            <div class="diag-row"><span>Last line seen</span><span id="diagLastLine">—</span></div>
-            <div class="diag-row"><span>Last error</span><span id="diagError">—</span></div>
+            <div class="diag-row"><span>Last sample age</span><span id="diagLastSample">&mdash;</span></div>
+            <div class="diag-row"><span>Last raw line</span><span id="diagLastLine">&mdash;</span></div>
+            <div class="diag-row"><span>Last error</span><span id="diagError">&mdash;</span></div>
+            <div class="diag-row"><span>Cleanup completed</span><span id="diagCleanup">YES</span></div>
           </div>
         </details>
       </aside>
@@ -433,10 +439,32 @@
     "use strict";
 
     const BAUD_RATE = 115200;
+    const SERIAL_BUFFER_SIZE = 1024;
     const CALIBRATION_MS = 5000;
+    const CALIBRATION_SETTLE_MS = 500;   // the first moment after pressing Calibrate is ignored
+    const MIN_CALIBRATION_SCORES = 35;
     const RSSI_BUFFER_SIZE = 240;
     const MOTION_WINDOW_SIZE = 20;
     const SAMPLE_WARNING_MS = 1800;
+    const SAMPLE_GAP_RESET_MS = 1000;    // a long silence makes the rolling window meaningless
+    const MOTION_ENTER_HOLD_MS = 1500;
+    const MOTION_REFRESH_HOLD_MS = 500;
+    const LINE_BUFFER_LIMIT = 4096;
+    // Every cleanup step is bounded. A serial call that never settles (common when the
+    // USB device is yanked) must not be able to freeze the UI in a "Working..." state.
+    const CLEANUP_TIMEOUT_MS = 2000;
+
+    // The whole connection lifecycle is one explicit state machine. Every button,
+    // status line and diagnostic reads from it, so the UI can never disagree with
+    // what the serial port is actually doing.
+    const State = {
+      DISCONNECTED: "DISCONNECTED",
+      CONNECTING: "CONNECTING",
+      PORT_OPEN: "PORT OPEN",
+      READING: "READING",
+      STOPPING: "STOPPING",
+      ERROR: "ERROR"
+    };
 
     const elements = {
       connectionPill: document.querySelector("#connectionPill"),
@@ -461,28 +489,35 @@
       statusCard: document.querySelector("#statusCard"),
       statusMessage: document.querySelector("#statusMessage"),
       canvas: document.querySelector("#rssiCanvas"),
-      diagStage: document.querySelector("#diagStage"),
+      diagState: document.querySelector("#diagState"),
+      diagPort: document.querySelector("#diagPort"),
+      diagReadable: document.querySelector("#diagReadable"),
+      diagReader: document.querySelector("#diagReader"),
+      diagLoop: document.querySelector("#diagLoop"),
+      diagSignals: document.querySelector("#diagSignals"),
       diagBytes: document.querySelector("#diagBytes"),
       diagLines: document.querySelector("#diagLines"),
       diagSamples: document.querySelector("#diagSamples"),
       diagLastSample: document.querySelector("#diagLastSample"),
       diagLastLine: document.querySelector("#diagLastLine"),
-      diagError: document.querySelector("#diagError")
+      diagError: document.querySelector("#diagError"),
+      diagCleanup: document.querySelector("#diagCleanup")
     };
 
-    const serialSupported = "serial" in navigator;
+    const serialSupported = typeof navigator !== "undefined" && "serial" in navigator;
     const rssiHistory = [];
     const rollingWindow = [];
     const calibrationScores = [];
 
-    let activePort = null;
-    let rememberedPort = null;
-    let reader = null;
-    let readLoopPromise = null;
-    let connectionToken = 0;
-    let busy = false;
-    let connected = false;
+    // Exactly one session object exists per physical connection. The read loop
+    // checks it on every iteration, so a reader left over from an old session
+    // can never write into the new session's state.
+    let session = null;
+    let sessionCounter = 0;
+    let connectionState = State.DISCONNECTED;
     let connectionNote = "Connect your ESP32-S3 to begin.";
+    let signalsState = "UNKNOWN";
+    let cleanupCompleted = true;
 
     let currentRssi = null;
     let motionScore = null;
@@ -500,8 +535,8 @@
     let calibrationFailure = "";
     let lastPaintAt = 0;
 
-    // Diagnostics: separate from the motion algorithm, these just answer
-    // "how far did data get through the pipeline?" for a physical tester.
+    // Diagnostics are deliberately separate from the motion algorithm: they only
+    // answer "how far did the data get?" so a tester can name the broken stage.
     let bytesReceivedTotal = 0;
     let linesSeenTotal = 0;
     let samplesParsedTotal = 0;
@@ -510,7 +545,48 @@
     let lastRawLine = "";
     let lastSerialError = "";
 
-    function resetMeasurements(clearGraph = true) {
+    // ------------------------------------------------------------------
+    // Small helpers
+    // ------------------------------------------------------------------
+
+    function describeError(error) {
+      if (!error) return "Unknown error";
+      return error.message || error.name || String(error);
+    }
+
+    // Resolves to a result object and NEVER rejects or hangs. Cleanup uses this
+    // for every await so a dead USB device cannot wedge the state machine.
+    function settle(promise, timeoutMs) {
+      let timer = null;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, timedOut: true }), timeoutMs);
+      });
+      const work = Promise.resolve(promise).then(
+        () => ({ ok: true }),
+        (error) => ({ ok: false, error })
+      );
+      return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+    }
+
+    function isCurrentSession(candidate) {
+      return session === candidate && !candidate.stopping;
+    }
+
+    function isLive() {
+      return connectionState === State.READING;
+    }
+
+    function isBusy() {
+      return connectionState === State.CONNECTING ||
+             connectionState === State.PORT_OPEN ||
+             connectionState === State.STOPPING;
+    }
+
+    function setState(next) {
+      connectionState = next;
+    }
+
+    function resetMeasurements() {
       currentRssi = null;
       motionScore = null;
       baselineScore = null;
@@ -522,10 +598,11 @@
       sampleRate = 0;
       rateWindowStartedAt = performance.now();
       isCalibrating = false;
+      calibrationStartedAt = 0;
+      calibrationFailure = "";
       calibrationScores.length = 0;
       rollingWindow.length = 0;
-      calibrationFailure = "";
-      if (clearGraph) rssiHistory.length = 0;
+      rssiHistory.length = 0;
 
       bytesReceivedTotal = 0;
       linesSeenTotal = 0;
@@ -533,8 +610,11 @@
       lastByteAt = 0;
       lastLineAt = 0;
       lastRawLine = "";
-      lastSerialError = "";
     }
+
+    // ------------------------------------------------------------------
+    // Motion algorithm
+    // ------------------------------------------------------------------
 
     function sensitivityMargin() {
       const value = Number(elements.sensitivity.value);
@@ -552,7 +632,7 @@
       for (let index = 1; index < rollingWindow.length; index += 1) {
         totalChange += Math.abs(rollingWindow[index] - rollingWindow[index - 1]);
       }
-      // Mean absolute delta: the average change between neighboring RSSI samples.
+      // Mean absolute delta: the average change between neighbouring RSSI samples.
       return totalChange / (rollingWindow.length - 1);
     }
 
@@ -562,23 +642,32 @@
 
       if (!isMotion && motionScore >= threshold) {
         isMotion = true;
-        motionHoldUntil = now + 1500;
+        motionHoldUntil = now + MOTION_ENTER_HOLD_MS;
         return;
       }
 
       if (isMotion) {
-        if (motionScore >= threshold) motionHoldUntil = Math.max(motionHoldUntil, now + 500);
-
-        // A lower exit threshold plus a short hold prevents rapid state flicker.
+        if (motionScore >= threshold) {
+          motionHoldUntil = Math.max(motionHoldUntil, now + MOTION_REFRESH_HOLD_MS);
+        }
+        // A lower exit threshold plus a short hold prevents rapid STILL/MOTION flicker.
         const exitThreshold = Math.max(baselineScore + 0.1, threshold - 0.3);
         if (now >= motionHoldUntil && motionScore < exitThreshold) isMotion = false;
       }
     }
 
     function handleRssiSample(value) {
-      if (!Number.isInteger(value) || value > 0 || value < -127) return;
+      // Reject anything outside a physically possible RSSI so a corrupt line, or
+      // the 0 the ESP32 reports before its first real measurement, cannot poison
+      // the baseline or blow up the graph scale.
+      if (!Number.isInteger(value) || value >= 0 || value < -127) return;
 
       const now = performance.now();
+
+      // After a stall (Wi-Fi drop, ESP reset) the first new sample would otherwise
+      // produce one huge fake delta, so the window restarts instead.
+      if (lastSampleAt && now - lastSampleAt > SAMPLE_GAP_RESET_MS) rollingWindow.length = 0;
+
       currentRssi = value;
       lastSampleAt = now;
       sampleCount += 1;
@@ -593,9 +682,12 @@
       motionScore = calculateMotionScore();
 
       if (isCalibrating) {
-        if (motionScore !== null && now - calibrationStartedAt > 500) {
+        if (motionScore !== null && now - calibrationStartedAt > CALIBRATION_SETTLE_MS) {
           calibrationScores.push(motionScore);
         }
+        // Also finish here, not only in the paint loop: a background tab throttles
+        // requestAnimationFrame and calibration would otherwise never complete.
+        if (now - calibrationStartedAt >= CALIBRATION_MS) finishCalibration(now);
       } else {
         evaluateMotion(now);
       }
@@ -604,145 +696,21 @@
     function parseSerialLine(rawLine) {
       const line = rawLine.trim();
       const match = /^RSSI,(-?\d+)$/.exec(line);
-      if (!match) return; // INFO lines, partial data, and unknown messages are harmless.
+      if (!match) return; // INFO lines and unknown messages are harmless, just ignored.
       handleRssiSample(Number(match[1]));
     }
 
-    async function readSerial(selectedPort, token) {
-      const decoder = new TextDecoder();
-      let serialBuffer = "";
-      let localReader = null;
+    // ------------------------------------------------------------------
+    // Calibration
+    // ------------------------------------------------------------------
 
-      try {
-        if (!selectedPort.readable) throw new Error("The selected serial port is not readable.");
-        localReader = selectedPort.readable.getReader();
-        reader = localReader;
-
-        while (connected && token === connectionToken && activePort === selectedPort) {
-          const { value, done } = await localReader.read();
-          if (done) break;
-
-          // A chunk arriving at all proves bytes are actually reaching the browser,
-          // which is the first thing to check when the pipeline looks silent.
-          bytesReceivedTotal += value.byteLength;
-          lastByteAt = performance.now();
-
-          serialBuffer += decoder.decode(value, { stream: true });
-          // Partial lines are normal: USB chunks split wherever the OS feels like it,
-          // so only fully-terminated lines are processed; the remainder waits for more bytes.
-          const lines = serialBuffer.split("\n");
-          serialBuffer = lines.pop() || "";
-          for (const line of lines) {
-            linesSeenTotal += 1;
-            lastLineAt = performance.now();
-            const trimmed = line.trim();
-            if (trimmed) lastRawLine = trimmed;
-            parseSerialLine(line);
-          }
-
-          // Corrupt input without newlines must not grow memory forever.
-          if (serialBuffer.length > 4096) serialBuffer = serialBuffer.slice(-4096);
-        }
-      } catch (error) {
-        if (token === connectionToken && connected) {
-          console.warn("Serial read stopped:", error);
-          lastSerialError = error.message || String(error);
-        }
-      } finally {
-        if (localReader) localReader.releaseLock();
-        if (reader === localReader) reader = null;
-
-        if (token === connectionToken && connected && activePort === selectedPort) {
-          connected = false;
-          activePort = null;
-          isCalibrating = false;
-          baselineScore = null;
-          isMotion = false;
-          rememberedPort = selectedPort;
-          connectionNote = "Connection lost or ESP32 reset. Press Reconnect ESP32.";
-          selectedPort.close().catch(() => {});
-          updateInterface(performance.now());
-        }
-      }
-    }
-
-    async function connectSerial() {
-      if (!serialSupported || connected || busy) return;
-      busy = true;
-      connectionNote = "Choose the ESP32-S3 serial device in the browser prompt.";
-      updateInterface(performance.now());
-
-      try {
-        const grantedPorts = await navigator.serial.getPorts();
-        const selectedPort = rememberedPort && grantedPorts.includes(rememberedPort)
-          ? rememberedPort
-          : (grantedPorts.length === 1 ? grantedPorts[0] : await navigator.serial.requestPort());
-
-        await selectedPort.open({ baudRate: BAUD_RATE, bufferSize: 1024 });
-
-        // Native USB-CDC firmware (like this ESP32-S3) only transmits once the host
-        // raises DTR — that's how the chip's USB stack knows a listener is attached.
-        // Serial terminal apps do this automatically; Web Serial does not, so without
-        // this call the port opens fine but zero bytes ever arrive.
-        try {
-          await selectedPort.setSignals({ dataTerminalReady: true, requestToSend: true });
-        } catch (signalError) {
-          console.warn("Could not set DTR/RTS signals:", signalError);
-        }
-
-        connectionToken += 1;
-        activePort = selectedPort;
-        rememberedPort = selectedPort;
-        connected = true;
-        resetMeasurements();
-        connectedAt = performance.now();
-        connectionNote = "Connected. Keep the environment still and press Calibrate.";
-        readLoopPromise = readSerial(selectedPort, connectionToken);
-      } catch (error) {
-        if (error.name === "NotFoundError") {
-          connectionNote = "Connection cancelled. Press Connect ESP32 when you are ready.";
-        } else {
-          console.error("Could not open serial port:", error);
-          lastSerialError = error.message || String(error);
-          connectionNote = "Could not open the port. Close PlatformIO Serial Monitor, reconnect USB, and try again.";
-        }
-      } finally {
-        busy = false;
-        updateInterface(performance.now());
-      }
-    }
-
-    async function disconnectSerial(userRequested = true) {
-      if (!activePort || busy) return;
-      busy = true;
-      const portToClose = activePort;
-      connected = false;
-      activePort = null;
-      connectionToken += 1;
-      isCalibrating = false;
-      updateInterface(performance.now());
-
-      try {
-        if (reader) await reader.cancel();
-        if (readLoopPromise) await readLoopPromise;
-        await portToClose.close();
-      } catch (error) {
-        console.warn("Serial port closed with a warning:", error);
-      } finally {
-        reader = null;
-        readLoopPromise = null;
-        rememberedPort = portToClose;
-        resetMeasurements();
-        connectionNote = userRequested
-          ? "Disconnected. Press Reconnect ESP32 when you are ready."
-          : "ESP32 disconnected. Check USB, then press Reconnect ESP32.";
-        busy = false;
-        updateInterface(performance.now());
-      }
+    function canCalibrate(now) {
+      return isLive() && !isCalibrating && lastSampleAt !== 0 && now - lastSampleAt < SAMPLE_WARNING_MS;
     }
 
     function startCalibration() {
-      if (!connected || isCalibrating || performance.now() - lastSampleAt > SAMPLE_WARNING_MS) return;
+      const now = performance.now();
+      if (!canCalibrate(now)) return;
 
       // Calibration learns the normal variation while the radio link is quiet.
       baselineScore = null;
@@ -753,52 +721,267 @@
       calibrationScores.length = 0;
       calibrationFailure = "";
       isCalibrating = true;
-      calibrationStartedAt = performance.now();
-      updateInterface(calibrationStartedAt);
+      calibrationStartedAt = now;
+      updateInterface(now);
+    }
+
+    function abortCalibration(reason) {
+      if (!isCalibrating) return;
+      isCalibrating = false;
+      calibrationScores.length = 0;
+      baselineScore = null;
+      calibrationFailure = reason;
     }
 
     function finishCalibration(now) {
+      if (!isCalibrating) return;
       isCalibrating = false;
-      const samplesAreFresh = now - lastSampleAt < SAMPLE_WARNING_MS;
+      const samplesAreFresh = lastSampleAt !== 0 && now - lastSampleAt < SAMPLE_WARNING_MS;
 
-      if (!samplesAreFresh || calibrationScores.length < 35) {
+      if (!samplesAreFresh || calibrationScores.length < MIN_CALIBRATION_SCORES) {
         baselineScore = null;
+        calibrationScores.length = 0;
         calibrationFailure = "Calibration did not receive enough samples. Check the ESP32 and try again.";
         return;
       }
 
       baselineScore = calibrationScores.reduce((sum, score) => sum + score, 0) / calibrationScores.length;
+      calibrationScores.length = 0;
       calibrationFailure = "";
       isMotion = false;
       motionHoldUntil = 0;
       evaluateMotion(now);
     }
 
-    // Names exactly where the pipeline has gotten to, so a physical tester can say
-    // "it's stuck at X" instead of just "it doesn't work".
-    function diagnosticStage(now) {
-      if (!connected) return "Not connected";
-      if (!lastByteAt) return "Serial port open — waiting for data";
-      if (!lastLineAt) return "Receiving bytes — no complete line yet";
-      if (!lastSampleAt) return "Receiving lines — no RSSI sample yet";
-      if (now - lastSampleAt < SAMPLE_WARNING_MS) return "RSSI streaming";
-      return "No signal — RSSI samples stopped";
+    // ------------------------------------------------------------------
+    // Serial: read loop
+    // ------------------------------------------------------------------
+
+    async function runReadLoop(active) {
+      const decoder = new TextDecoder();
+      let lineBuffer = "";
+      let loopError = null;
+      let reader = null;
+
+      active.readLoopActive = true;
+      try {
+        if (!active.port.readable) throw new Error("The serial port is not readable.");
+        reader = active.port.readable.getReader();
+        active.reader = reader;
+
+        while (isCurrentSession(active)) {
+          const { value, done } = await reader.read();
+          if (done) break; // cancel() was called, or the device closed the stream.
+
+          // A chunk arriving at all proves bytes really reach the browser, which is
+          // the first thing to check when the pipeline looks silent.
+          bytesReceivedTotal += value.byteLength;
+          lastByteAt = performance.now();
+
+          // USB chunks split wherever the OS feels like it, so "RSSI,-57\r\n" can
+          // arrive as "RSS" + "I,-5" + "7\r\n". Only complete lines are parsed; the
+          // leftover waits here for the next chunk.
+          lineBuffer += decoder.decode(value, { stream: true });
+          const lines = lineBuffer.split("\n");
+          lineBuffer = lines.pop() || "";
+          for (const line of lines) {
+            linesSeenTotal += 1;
+            lastLineAt = performance.now();
+            const trimmed = line.trim();
+            if (trimmed) lastRawLine = trimmed;
+            parseSerialLine(line);
+          }
+
+          // Corrupt input without newlines must not grow memory forever.
+          if (lineBuffer.length > LINE_BUFFER_LIMIT) lineBuffer = lineBuffer.slice(-LINE_BUFFER_LIMIT);
+        }
+      } catch (error) {
+        loopError = error;
+      } finally {
+        if (reader) {
+          try { reader.releaseLock(); } catch (releaseError) { /* already released */ }
+          if (active.reader === reader) active.reader = null;
+        }
+        active.readLoopActive = false;
+
+        // Still the current session means the stream ended on its own: unplugged
+        // USB, an ESP32 reset, or a fatal port error. Clean up the same way a
+        // user-pressed Disconnect would, so the next Connect starts from zero.
+        if (isCurrentSession(active)) {
+          if (loopError) lastSerialError = describeError(loopError);
+          teardown(active, loopError
+            ? "Connection lost while reading. Check the USB cable, then press Connect ESP32."
+            : "The ESP32 stopped sending. Press Connect ESP32 to reconnect.");
+        }
+      }
     }
 
-    function updateDiagnostics(now) {
-      elements.diagStage.textContent = diagnosticStage(now);
-      elements.diagBytes.textContent = String(bytesReceivedTotal);
-      elements.diagLines.textContent = String(linesSeenTotal);
-      elements.diagSamples.textContent = String(samplesParsedTotal);
-      elements.diagLastSample.textContent = lastSampleAt ? `${((now - lastSampleAt) / 1000).toFixed(1)} s ago` : "—";
-      elements.diagLastLine.textContent = lastRawLine || "—";
-      elements.diagError.textContent = lastSerialError || "—";
+    // ------------------------------------------------------------------
+    // Serial: connect
+    // ------------------------------------------------------------------
+
+    async function connectSerial() {
+      if (!serialSupported) return;
+      // Double clicks, and clicks during teardown, are ignored.
+      if (connectionState !== State.DISCONNECTED && connectionState !== State.ERROR) return;
+
+      setState(State.CONNECTING);
+      lastSerialError = "";
+      signalsState = "UNKNOWN";
+      cleanupCompleted = true;
+      connectionNote = "Choose the ESP32-S3 serial device in the browser prompt.";
+      updateInterface(performance.now());
+
+      // Always ask explicitly. Reusing a port from getPorts() skips the picker and
+      // can hand back a stale device that silently produces zero bytes, so v0
+      // trades that convenience for a connection the user can see happening.
+      let port;
+      try {
+        port = await navigator.serial.requestPort();
+      } catch (error) {
+        // NotFoundError simply means the user closed the picker without choosing.
+        if (error && error.name === "NotFoundError") {
+          connectionNote = "Connection cancelled. Press Connect ESP32 when you are ready.";
+          setState(State.DISCONNECTED);
+        } else {
+          lastSerialError = describeError(error);
+          connectionNote = "The browser refused to open the device picker.";
+          setState(State.ERROR);
+        }
+        updateInterface(performance.now());
+        return;
+      }
+
+      try {
+        await openPort(port);
+      } catch (error) {
+        lastSerialError = describeError(error);
+        await settle(port.close(), CLEANUP_TIMEOUT_MS); // may not even be open; harmless
+        connectionNote = "Could not open the port. Close the PlatformIO Serial Monitor, replug the USB cable, and try again.";
+        setState(State.ERROR);
+        updateInterface(performance.now());
+        return;
+      }
+
+      setState(State.PORT_OPEN);
+      updateInterface(performance.now());
+
+      // The ESP32-S3 native USB port is a CDC device: its USB stack only starts
+      // transmitting once the host raises DTR, which is how it knows a terminal is
+      // listening. Serial monitors do this for you; Web Serial does not, so without
+      // setSignals the port opens perfectly and zero bytes ever arrive.
+      // DTR and RTS are raised together because on boards with a USB-UART bridge
+      // that pair drives the auto-reset circuit, and equal levels mean "no reset".
+      const signalResult = await settle(
+        port.setSignals({ dataTerminalReady: true, requestToSend: true }),
+        CLEANUP_TIMEOUT_MS
+      );
+      if (signalResult.ok) {
+        signalsState = "SET";
+      } else {
+        signalsState = "FAILED";
+        lastSerialError = signalResult.timedOut
+          ? "setSignals timed out (DTR/RTS not applied)"
+          : describeError(signalResult.error);
+      }
+
+      sessionCounter += 1;
+      session = {
+        id: sessionCounter,
+        port,
+        reader: null,
+        readLoopActive: false,
+        stopping: false,
+        done: null
+      };
+      resetMeasurements();
+      connectedAt = performance.now();
+      connectionNote = "Connected. Keep the environment still and press Calibrate.";
+      setState(State.READING);
+      session.done = runReadLoop(session);
+      updateInterface(performance.now());
     }
+
+    async function openPort(port) {
+      const options = { baudRate: BAUD_RATE, bufferSize: SERIAL_BUFFER_SIZE };
+      try {
+        await port.open(options);
+      } catch (error) {
+        // A previous cleanup that timed out can leave this exact port open.
+        // Closing and retrying once turns a dead end into a working connection.
+        if (error && error.name === "InvalidStateError") {
+          await settle(port.close(), CLEANUP_TIMEOUT_MS);
+          await port.open(options);
+          return;
+        }
+        throw error;
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Serial: disconnect / cleanup
+    // ------------------------------------------------------------------
+
+    // The one place resources are released. Idempotent, bounded at every step, and
+    // it always ends with the references cleared even if the hardware misbehaves.
+    async function teardown(target, note) {
+      const active = target || session;
+      if (!active || active.stopping) return;      // repeated Disconnect clicks are safe
+      if (session !== active) return;              // a stale session cannot tear down a live one
+
+      active.stopping = true;                      // invalidates the read loop immediately
+      setState(State.STOPPING);
+      cleanupCompleted = false;
+      connectionNote = "Disconnecting…";
+      updateInterface(performance.now());
+
+      let clean = true;
+
+      // 1. Cancel the reader so a pending read() resolves instead of hanging forever.
+      if (active.reader) {
+        const cancelled = await settle(active.reader.cancel(), CLEANUP_TIMEOUT_MS);
+        if (!cancelled.ok) clean = false;
+      }
+
+      // 2. Wait for the read loop to actually leave, so it cannot touch state later.
+      //    Skipped when teardown was called from inside that loop's own finally.
+      if (active.done && active.readLoopActive) {
+        const finished = await settle(active.done, CLEANUP_TIMEOUT_MS);
+        if (!finished.ok) clean = false;
+      }
+
+      // 3. The loop releases its own lock; this only covers the case where it hung.
+      if (active.reader) {
+        try { active.reader.releaseLock(); } catch (error) { /* already released */ }
+        active.reader = null;
+      }
+
+      // 4. Drop DTR/RTS so the ESP32's USB stack sees the host detach.
+      await settle(active.port.setSignals({ dataTerminalReady: false, requestToSend: false }), CLEANUP_TIMEOUT_MS);
+
+      // 5. Close the port. This is what actually releases the device to other apps.
+      const closed = await settle(active.port.close(), CLEANUP_TIMEOUT_MS);
+      if (!closed.ok) {
+        clean = false;
+        lastSerialError = closed.timedOut ? "port.close() timed out" : describeError(closed.error);
+      }
+
+      session = null;
+      cleanupCompleted = clean;
+      resetMeasurements();
+      connectionNote = note || "Disconnected. Press Connect ESP32 when you are ready.";
+      setState(State.DISCONNECTED);
+      updateInterface(performance.now());
+    }
+
+    // ------------------------------------------------------------------
+    // Interface
+    // ------------------------------------------------------------------
 
     function updateSampleRate(now) {
       const elapsed = now - rateWindowStartedAt;
       if (elapsed < 1000) return;
-      sampleRate = sampleCount * 1000 / elapsed;
+      sampleRate = (sampleCount * 1000) / elapsed;
       sampleCount = 0;
       rateWindowStartedAt = now;
     }
@@ -819,15 +1002,45 @@
       elements.statusMessage.append(detailElement);
     }
 
+    // The displayed state adds one derived value: READING only becomes STREAMING
+    // once RSSI samples are genuinely arriving.
+    function displayState(now) {
+      if (connectionState !== State.READING) return connectionState;
+      if (lastSampleAt && now - lastSampleAt < SAMPLE_WARNING_MS) return "STREAMING";
+      return State.READING;
+    }
+
+    function updateDiagnostics(now) {
+      const port = session ? session.port : null;
+      elements.diagState.textContent = displayState(now);
+      elements.diagPort.textContent = port ? "YES" : "NO";
+      elements.diagReadable.textContent = port && port.readable ? "YES" : "NO";
+      elements.diagReader.textContent = session && session.reader ? "YES" : "NO";
+      elements.diagLoop.textContent = session && session.readLoopActive ? "YES" : "NO";
+      elements.diagSignals.textContent = signalsState;
+      elements.diagBytes.textContent = String(bytesReceivedTotal);
+      elements.diagLines.textContent = String(linesSeenTotal);
+      elements.diagSamples.textContent = String(samplesParsedTotal);
+      elements.diagLastSample.textContent = lastSampleAt ? `${Math.round(now - lastSampleAt)} ms` : "—";
+      elements.diagLastLine.textContent = lastRawLine || "—";
+      elements.diagError.textContent = lastSerialError || "—";
+      elements.diagCleanup.textContent = cleanupCompleted ? "YES" : "NO";
+    }
+
     function updateInterface(now) {
       updateSampleRate(now);
       updateDiagnostics(now);
+
+      const live = isLive();
+      const busy = isBusy();
       const sampleAge = lastSampleAt ? now - lastSampleAt : Infinity;
-      const hasFreshSample = connected && sampleAge < SAMPLE_WARNING_MS;
+      const hasFreshSample = live && sampleAge < SAMPLE_WARNING_MS;
       const threshold = detectionThreshold();
 
-      elements.connectionPill.classList.toggle("connected", connected);
-      elements.connectionText.textContent = busy ? "Working…" : (connected ? (hasFreshSample ? "Connected" : "No signal") : "Disconnected");
+      elements.connectionPill.classList.toggle("connected", hasFreshSample);
+      elements.connectionText.textContent = busy
+        ? (connectionState === State.STOPPING ? "Disconnecting…" : "Connecting…")
+        : (live ? (hasFreshSample ? "Connected" : "No signal") : "Disconnected");
 
       elements.rssiValue.textContent = currentRssi === null ? "—" : String(currentRssi);
       elements.scoreValue.textContent = motionScore === null ? "—" : motionScore.toFixed(2);
@@ -838,7 +1051,7 @@
       elements.sensitivityOutput.textContent = sensitivityName();
 
       elements.stateHero.classList.remove("still", "motion");
-      if (!connected) {
+      if (!live) {
         elements.stateLabel.textContent = "WAITING";
         elements.stateCaption.textContent = "Connect the sensor to start";
       } else if (isCalibrating) {
@@ -870,27 +1083,30 @@
       elements.progressBar.style.width = `${progress}%`;
       elements.progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
 
-      elements.connectButton.disabled = connected || busy || !serialSupported;
-      elements.connectButton.textContent = rememberedPort ? "Reconnect ESP32" : "Connect ESP32";
-      elements.disconnectButton.disabled = !connected || busy;
-      elements.calibrateButton.disabled = !connected || busy || isCalibrating || !hasFreshSample;
-      elements.calibrateButton.textContent = isCalibrating ? "Calibrating…" : (baselineScore === null ? "Calibrate" : "Recalibrate");
+      elements.connectButton.disabled = !serialSupported || live || busy;
+      elements.disconnectButton.disabled = !live;
+      elements.calibrateButton.disabled = !canCalibrate(now);
+      elements.calibrateButton.textContent = isCalibrating
+        ? "Calibrating…"
+        : (baselineScore === null ? "Calibrate" : "Recalibrate");
 
       if (!serialSupported) {
         setStatus("Web Serial is not supported in this browser.", "Open this page in desktop Chrome or Edge at localhost.", true);
       } else if (busy) {
         setStatus(connectionNote, "Please wait a moment.");
-      } else if (!connected) {
-        setStatus(connectionNote, rememberedPort ? "USB permission is remembered; press Reconnect ESP32." : "Use desktop Chrome or Edge and close any open Serial Monitor.");
+      } else if (!live) {
+        setStatus(connectionNote, "Close any open Serial Monitor, then press Connect ESP32 and pick the device.", connectionState === State.ERROR);
       } else if (!lastSampleAt) {
         const waitingTooLong = now - connectedAt > 8000;
         setStatus(
           waitingTooLong ? "No RSSI samples received yet." : "Connected. Waiting for RSSI samples…",
-          waitingTooLong ? "Check the ESP32 Wi-Fi credentials and Serial output." : "The ESP32 may still be joining Wi-Fi.",
+          waitingTooLong
+            ? "Open Diagnostics: if Bytes received is 0, check DTR/RTS and the USB port; otherwise check the Wi-Fi credentials."
+            : "The ESP32 may still be joining Wi-Fi.",
           waitingTooLong
         );
       } else if (!hasFreshSample) {
-        setStatus("RSSI samples have stopped.", "Check Wi-Fi and USB. The firmware will retry Wi-Fi automatically.", true);
+        setStatus("RSSI samples have stopped.", "Check Wi-Fi and USB. The firmware retries Wi-Fi automatically.", true);
       } else if (isCalibrating) {
         setStatus("CALIBRATING… Keep the environment still.", "Quiet measurements are building the baseline for about 5 seconds.");
       } else if (calibrationFailure) {
@@ -901,6 +1117,10 @@
         setStatus("Ready — move around the Wi-Fi link.", "Motion appears when the score rises above the displayed threshold.");
       }
     }
+
+    // ------------------------------------------------------------------
+    // Graph
+    // ------------------------------------------------------------------
 
     function drawGraph() {
       const canvas = elements.canvas;
@@ -987,7 +1207,13 @@
     }
 
     function animationLoop(now) {
-      if (isCalibrating && now - calibrationStartedAt >= CALIBRATION_MS) finishCalibration(now);
+      if (isCalibrating) {
+        if (lastSampleAt && now - lastSampleAt > SAMPLE_WARNING_MS) {
+          abortCalibration("Calibration stopped because RSSI samples stopped arriving.");
+        } else if (now - calibrationStartedAt >= CALIBRATION_MS) {
+          finishCalibration(now);
+        }
+      }
 
       if (now - lastPaintAt >= 100) {
         updateInterface(now);
@@ -997,26 +1223,28 @@
       requestAnimationFrame(animationLoop);
     }
 
+    // ------------------------------------------------------------------
+    // Wiring
+    // ------------------------------------------------------------------
+
     elements.connectButton.addEventListener("click", connectSerial);
-    elements.disconnectButton.addEventListener("click", () => disconnectSerial(true));
+    elements.disconnectButton.addEventListener("click", () => teardown(session, null));
     elements.calibrateButton.addEventListener("click", startCalibration);
     elements.sensitivity.addEventListener("input", () => {
-      if (baselineScore !== null) evaluateMotion(performance.now());
-      updateInterface(performance.now());
+      const now = performance.now();
+      if (baselineScore !== null) evaluateMotion(now);
+      updateInterface(now);
     });
 
     if (serialSupported) {
+      // Fired when the USB device physically disappears. The read loop usually
+      // notices too, but this arrives first and teardown() is idempotent.
       navigator.serial.addEventListener("disconnect", (event) => {
-        if (event.target === activePort) disconnectSerial(false);
-      });
-
-      navigator.serial.getPorts().then((ports) => {
-        if (ports.length === 1 && !connected) {
-          rememberedPort = ports[0];
-          connectionNote = "ESP32 permission remembered. Press Reconnect ESP32.";
-          updateInterface(performance.now());
+        if (session && event.target === session.port) {
+          lastSerialError = "USB device removed";
+          teardown(session, "The ESP32 was unplugged. Reconnect the cable, then press Connect ESP32.");
         }
-      }).catch(() => {});
+      });
     }
 
     updateInterface(performance.now());
