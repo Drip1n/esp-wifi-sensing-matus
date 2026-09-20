@@ -21,6 +21,7 @@
       --motion: #ff9566;
       --motion-soft: rgba(255, 103, 84, 0.15);
       --warning: #ffc86a;
+      --warning-soft: rgba(255, 200, 106, 0.13);
       --radius: 18px;
       font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -147,6 +148,8 @@
       pointer-events: none;
     }
 
+    .state-hero.shift { background: linear-gradient(180deg, var(--warning-soft), transparent); }
+    .state-hero.shift .state-label { color: var(--warning); text-shadow: 0 0 35px rgba(255, 200, 106, .22); }
     .state-hero.still { background: linear-gradient(180deg, var(--still-soft), transparent); }
     .state-hero.motion { background: linear-gradient(180deg, var(--motion-soft), transparent); }
     .state-hero.motion::after { background: radial-gradient(circle, rgba(255, 103, 84, .21), transparent 66%); animation: pulse 1.25s ease-out infinite; }
@@ -175,7 +178,7 @@
 
     .metrics {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       border-top: 1px solid var(--border);
       border-bottom: 1px solid var(--border);
     }
@@ -187,6 +190,40 @@
     .metric-unit { color: var(--muted); font-size: .77rem; font-weight: 550; letter-spacing: 0; }
 
     .graph-wrap { padding: 20px 20px 18px; }
+    .section-head-second { margin-top: 18px; }
+    .canvas-shell-short { height: 118px; }
+
+    /* ---- RF activity field ---- */
+    .rf-field-wrap { position: relative; height: 172px; margin: 4px 0 2px; }
+    .rf-field-wrap canvas { position: absolute; inset: 0; }
+    .rf-readout {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+    .rf-percent { font-size: 1.62rem; font-weight: 760; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+    .rf-percent-unit { margin-top: 1px; color: var(--muted); font-size: .64rem; letter-spacing: .07em; text-transform: uppercase; }
+    .rf-caption { margin: 2px 0 0; color: var(--muted); font-size: .68rem; line-height: 1.45; text-align: center; }
+    .rf-card.low #rfLevel { color: var(--still); }
+    .rf-card.medium #rfLevel { color: var(--warning); }
+    .rf-card.high #rfLevel { color: var(--motion); }
+
+    .peak-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 14px;
+      padding-top: 13px;
+      border-top: 1px solid rgba(143, 174, 210, .1);
+    }
+    .peak-key { display: block; color: var(--muted); font-size: .7rem; letter-spacing: .03em; text-transform: uppercase; }
+    .peak-value { display: block; margin-top: 3px; font-size: 1.02rem; font-weight: 720; font-variant-numeric: tabular-nums; }
+    .peak-button { min-height: 34px; padding: 0 12px; font-size: .72rem; }
     .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 15px; margin-bottom: 14px; }
     h2 { margin: 0; font-size: .9rem; letter-spacing: -.01em; }
     .section-note { color: var(--muted); font-size: .72rem; }
@@ -293,7 +330,8 @@
       .brand-mark { display: none; }
       .connection-pill { padding: 0 10px; }
       .metrics { grid-template-columns: 1fr 1fr; }
-      .metric:last-child { grid-column: 1 / -1; border-top: 1px solid var(--border); border-left: 0; }
+      .metric:nth-child(3), .metric:nth-child(4) { border-top: 1px solid var(--border); }
+      .metric:nth-child(odd) { border-left: 0; }
       .side { display: flex; }
       .canvas-shell { height: 195px; }
     }
@@ -335,12 +373,16 @@
             <div class="metric-value"><span id="rssiValue">—</span> <span class="metric-unit">dBm</span></div>
           </div>
           <div class="metric">
-            <div class="metric-name">Motion score</div>
+            <div class="metric-name">Fast change</div>
             <div class="metric-value" id="scoreValue">—</div>
           </div>
           <div class="metric">
-            <div class="metric-name">Threshold</div>
+            <div class="metric-name">Fast threshold</div>
             <div class="metric-value" id="thresholdValue">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-name">Signal shift</div>
+            <div class="metric-value"><span id="slowValue">—</span> <span class="metric-unit">dB</span></div>
           </div>
         </div>
 
@@ -352,6 +394,14 @@
           <div class="canvas-shell">
             <canvas id="rssiCanvas" role="img" aria-label="Scrolling graph of recent RSSI samples"></canvas>
           </div>
+
+          <div class="section-head section-head-second">
+            <h2>Fast change vs threshold</h2>
+            <span class="section-note">MOTION when the line crosses the dashes</span>
+          </div>
+          <div class="canvas-shell canvas-shell-short">
+            <canvas id="scoreCanvas" role="img" aria-label="Fast change score compared with the detection threshold"></canvas>
+          </div>
         </div>
       </section>
 
@@ -359,16 +409,20 @@
         <section class="card" aria-labelledby="algorithmHeading">
           <div class="section-head">
             <h2 id="algorithmHeading">Detection</h2>
-            <span class="section-note">Mean RSSI change</span>
+            <span class="section-note">Noise-aware threshold</span>
           </div>
 
           <div class="algorithm-list">
             <div class="algorithm-row">
-              <span class="algorithm-key">Baseline score</span>
+              <span class="algorithm-key">RF noise</span>
+              <span class="algorithm-value" id="noiseValue">—</span>
+            </div>
+            <div class="algorithm-row">
+              <span class="algorithm-key">Baseline</span>
               <span class="algorithm-value" id="baselineValue">Not calibrated</span>
             </div>
             <div class="algorithm-row">
-              <span class="algorithm-key">Threshold</span>
+              <span class="algorithm-key">Adaptive threshold</span>
               <span class="algorithm-value" id="thresholdDetail">—</span>
             </div>
             <div class="algorithm-row">
@@ -392,6 +446,28 @@
             <div class="progress-track" role="progressbar" aria-label="Calibration progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressTrack">
               <div class="progress-bar" id="progressBar"></div>
             </div>
+          </div>
+        </section>
+
+        <section class="card rf-card" aria-labelledby="rfHeading">
+          <div class="section-head">
+            <h2 id="rfHeading">RF activity</h2>
+            <span class="section-note" id="rfLevel">—</span>
+          </div>
+          <div class="rf-field-wrap">
+            <canvas id="activityCanvas" role="img" aria-label="Relative radio disturbance level"></canvas>
+            <div class="rf-readout">
+              <span class="rf-percent" id="rfPercent">—</span>
+              <span class="rf-percent-unit">of threshold</span>
+            </div>
+          </div>
+          <p class="rf-caption">Relative disturbance — <strong>not</strong> a position, range or direction.</p>
+          <div class="peak-row">
+            <div>
+              <span class="peak-key">Peak activity</span>
+              <span class="peak-value" id="peakValue">—</span>
+            </div>
+            <button id="resetPeakButton" class="peak-button" type="button">Reset peak</button>
           </div>
         </section>
 
@@ -429,6 +505,11 @@
             <div class="diag-row"><span>Last raw line</span><span id="diagLastLine">&mdash;</span></div>
             <div class="diag-row"><span>Last error</span><span id="diagError">&mdash;</span></div>
             <div class="diag-row"><span>Cleanup completed</span><span id="diagCleanup">YES</span></div>
+            <div class="diag-row"><span>Baseline mean / std</span><span id="diagBaseline">—</span></div>
+            <div class="diag-row"><span>Baseline RSSI / std</span><span id="diagBaselineRssi">—</span></div>
+            <div class="diag-row"><span>Fast score / threshold</span><span id="diagFast">—</span></div>
+            <div class="diag-row"><span>Slow score / threshold</span><span id="diagSlow">—</span></div>
+            <div class="diag-row"><span>Peak fast / slow</span><span id="diagPeak">—</span></div>
           </div>
         </details>
       </aside>
@@ -444,7 +525,28 @@
     const CALIBRATION_SETTLE_MS = 500;   // the first moment after pressing Calibrate is ignored
     const MIN_CALIBRATION_SCORES = 35;
     const RSSI_BUFFER_SIZE = 240;
-    const MOTION_WINDOW_SIZE = 20;
+    const MOTION_WINDOW_SIZE = 20;    // ~1 s at 20 Hz: the "fast change" window
+    const SLOW_WINDOW_SIZE = 100;     // ~5 s at 20 Hz: the "slow change" window
+
+    // --- Adaptive threshold tuning -----------------------------------------
+    // RSSI is reported in whole dBm, so over a 20-sample window the smallest
+    // possible non-zero fast score is one 1 dB step spread over 19 gaps = 0.053.
+    // A real quiet link measures about 0.01. These margins are therefore chosen
+    // in units of "how many 1 dB steps per second", not picked arbitrarily:
+    //   HIGH margin 0.10 ~= 2 steps/s, LOW margin 0.50 ~= 9 steps/s.
+    const FAST_MARGIN_LOW = 0.50;     // least sensitive end of the slider
+    const FAST_MARGIN_HIGH = 0.10;    // most sensitive end of the slider
+    const FAST_K_LOW = 6.0;           // std-dev multiplier, least sensitive
+    const FAST_K_HIGH = 3.0;          // std-dev multiplier, most sensitive
+    // Slow margins are in dB of mean RSSI shift, so they read directly.
+    const SLOW_MARGIN_LOW = 4.0;
+    const SLOW_MARGIN_HIGH = 1.2;
+    const SLOW_K_LOW = 5.0;
+    const SLOW_K_HIGH = 3.0;
+    // How far the fast score must fall back below the threshold before MOTION
+    // ends, as a fraction of the margin. Scales with the adaptive threshold.
+    const MOTION_EXIT_FRACTION = 0.6;
+    const SHIFT_HOLD_MS = 1200;
     const SAMPLE_WARNING_MS = 1800;
     const SAMPLE_GAP_RESET_MS = 1000;    // a long silence makes the rolling window meaningless
     const MOTION_ENTER_HOLD_MS = 1500;
@@ -489,6 +591,20 @@
       statusCard: document.querySelector("#statusCard"),
       statusMessage: document.querySelector("#statusMessage"),
       canvas: document.querySelector("#rssiCanvas"),
+      scoreCanvas: document.querySelector("#scoreCanvas"),
+      activityCanvas: document.querySelector("#activityCanvas"),
+      slowValue: document.querySelector("#slowValue"),
+      noiseValue: document.querySelector("#noiseValue"),
+      rfCard: document.querySelector(".rf-card"),
+      rfLevel: document.querySelector("#rfLevel"),
+      rfPercent: document.querySelector("#rfPercent"),
+      peakValue: document.querySelector("#peakValue"),
+      resetPeakButton: document.querySelector("#resetPeakButton"),
+      diagBaseline: document.querySelector("#diagBaseline"),
+      diagBaselineRssi: document.querySelector("#diagBaselineRssi"),
+      diagFast: document.querySelector("#diagFast"),
+      diagSlow: document.querySelector("#diagSlow"),
+      diagPeak: document.querySelector("#diagPeak"),
       diagState: document.querySelector("#diagState"),
       diagPort: document.querySelector("#diagPort"),
       diagReadable: document.querySelector("#diagReadable"),
@@ -506,8 +622,12 @@
 
     const serialSupported = typeof navigator !== "undefined" && "serial" in navigator;
     const rssiHistory = [];
-    const rollingWindow = [];
-    const calibrationScores = [];
+    const rollingWindow = [];     // last MOTION_WINDOW_SIZE raw RSSI values
+    const slowWindow = [];        // last SLOW_WINDOW_SIZE raw RSSI values
+    const calibrationScores = []; // fast scores collected while calibrating
+    const calibrationRssi = [];   // raw RSSI collected while calibrating
+    const scoreHistory = [];      // fast score per sample, for the detection graph
+    const thresholdHistory = [];  // threshold at that sample (null before calibration)
 
     // Exactly one session object exists per physical connection. The read loop
     // checks it on every iteration, so a reader left over from an old session
@@ -520,10 +640,19 @@
     let cleanupCompleted = true;
 
     let currentRssi = null;
-    let motionScore = null;
-    let baselineScore = null;
+    let fastScore = null;      // short-term RSSI agitation
+    let slowScore = null;      // how far the recent mean RSSI sits from baseline
+    let baselineMean = null;   // mean fast score measured on a quiet link
+    let baselineStd = null;    // its standard deviation = the RF noise floor
+    let baselineRssi = null;   // mean RSSI measured during calibration
+    let baselineRssiStd = null;
     let isMotion = false;
+    let isShift = false;
     let motionHoldUntil = 0;
+    let shiftHoldUntil = 0;
+    let peakFast = 0;          // experiment readouts, cleared by "Reset peak"
+    let peakSlow = 0;
+    let peakActivity = 0;
     let connectedAt = 0;
     let lastSampleAt = 0;
     let sampleCount = 0;
@@ -588,10 +717,17 @@
 
     function resetMeasurements() {
       currentRssi = null;
-      motionScore = null;
-      baselineScore = null;
+      fastScore = null;
+      slowScore = null;
+      baselineMean = null;
+      baselineStd = null;
+      baselineRssi = null;
+      baselineRssiStd = null;
       isMotion = false;
+      isShift = false;
       motionHoldUntil = 0;
+      shiftHoldUntil = 0;
+      resetPeak();
       connectedAt = 0;
       lastSampleAt = 0;
       sampleCount = 0;
@@ -601,8 +737,12 @@
       calibrationStartedAt = 0;
       calibrationFailure = "";
       calibrationScores.length = 0;
+      calibrationRssi.length = 0;
       rollingWindow.length = 0;
+      slowWindow.length = 0;
       rssiHistory.length = 0;
+      scoreHistory.length = 0;
+      thresholdHistory.length = 0;
 
       bytesReceivedTotal = 0;
       linesSeenTotal = 0;
@@ -616,43 +756,115 @@
     // Motion algorithm
     // ------------------------------------------------------------------
 
-    function sensitivityMargin() {
-      const value = Number(elements.sensitivity.value);
-      // Higher sensitivity means a smaller amount above the quiet baseline.
-      return 2.8 - ((value - 1) / 99) * 2.3;
+    // Slider 1..100 mapped to 0..1, where 1 means "most sensitive".
+    function sensitivity() {
+      return (Number(elements.sensitivity.value) - 1) / 99;
     }
 
-    function detectionThreshold() {
-      return baselineScore === null ? null : baselineScore + sensitivityMargin();
+    function lerp(atLowSensitivity, atHighSensitivity) {
+      return atLowSensitivity + (atHighSensitivity - atLowSensitivity) * sensitivity();
     }
 
-    function calculateMotionScore() {
+    // Mean and standard deviation. The standard deviation is the useful part:
+    // it says how much the quiet link normally wobbles all by itself, which is
+    // exactly the "RF noise floor" the threshold has to clear.
+    function meanAndStd(values) {
+      if (values.length === 0) return { mean: null, std: null };
+      const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+      if (values.length < 2) return { mean, std: 0 };
+      const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (values.length - 1);
+      return { mean, std: Math.sqrt(variance) };
+    }
+
+    // Adaptive threshold: baseline + whichever is larger, a fixed safety margin
+    // or a multiple of the measured noise. A quiet room therefore gets a low
+    // threshold (subtle disturbances show up) while a noisy one raises its own
+    // threshold automatically instead of false-triggering all day. The fixed
+    // margin is what stops the threshold collapsing to zero on a very still link.
+    function fastThreshold() {
+      if (baselineMean === null) return null;
+      const margin = Math.max(lerp(FAST_MARGIN_LOW, FAST_MARGIN_HIGH),
+                              lerp(FAST_K_LOW, FAST_K_HIGH) * baselineStd);
+      return baselineMean + margin;
+    }
+
+    function slowThreshold() {
+      if (baselineRssi === null) return null;
+      return Math.max(lerp(SLOW_MARGIN_LOW, SLOW_MARGIN_HIGH),
+                      lerp(SLOW_K_LOW, SLOW_K_HIGH) * baselineRssiStd);
+    }
+
+    // FAST CHANGE: mean absolute difference between neighbouring RSSI samples
+    // over about one second. Walking through the link scrambles the reflections
+    // (multipath), so consecutive samples stop agreeing and this number jumps.
+    function calculateFastScore() {
       if (rollingWindow.length < 2) return null;
       let totalChange = 0;
       for (let index = 1; index < rollingWindow.length; index += 1) {
         totalChange += Math.abs(rollingWindow[index] - rollingWindow[index - 1]);
       }
-      // Mean absolute delta: the average change between neighbouring RSSI samples.
       return totalChange / (rollingWindow.length - 1);
     }
 
-    function evaluateMotion(now) {
-      const threshold = detectionThreshold();
-      if (threshold === null || motionScore === null || isCalibrating) return;
+    // SLOW CHANGE: how far the average RSSI of the last ~5 s has drifted from
+    // the level measured during calibration, in dB. A body parked in the path,
+    // or a moved phone, shifts the average even when sample-to-sample jitter is
+    // small. It says the link changed - it does NOT say a person is there.
+    function calculateSlowScore() {
+      if (baselineRssi === null || slowWindow.length < Math.min(20, SLOW_WINDOW_SIZE)) return null;
+      const mean = slowWindow.reduce((sum, v) => sum + v, 0) / slowWindow.length;
+      return Math.abs(mean - baselineRssi);
+    }
 
-      if (!isMotion && motionScore >= threshold) {
+    // RF activity normalised against the current threshold: 1.0 means "exactly
+    // at the trigger point". It is a relative disturbance level, nothing else -
+    // it carries no distance, angle or position information.
+    function activityRatio() {
+      if (fastScore === null) return 0;
+      const reference = fastThreshold() ?? 0.5;
+      return reference > 0 ? fastScore / reference : 0;
+    }
+
+    function activityLabel(ratio) {
+      if (ratio < 0.5) return "LOW";
+      if (ratio < 1) return "MEDIUM";
+      return "HIGH";
+    }
+
+    function resetPeak() {
+      peakFast = 0;
+      peakSlow = 0;
+      peakActivity = 0;
+    }
+
+    function evaluateDetection(now) {
+      const fastLimit = fastThreshold();
+      if (fastLimit === null || fastScore === null || isCalibrating) return;
+
+      // --- fast path: MOTION ---
+      if (!isMotion && fastScore >= fastLimit) {
         isMotion = true;
         motionHoldUntil = now + MOTION_ENTER_HOLD_MS;
-        return;
-      }
-
-      if (isMotion) {
-        if (motionScore >= threshold) {
+      } else if (isMotion) {
+        if (fastScore >= fastLimit) {
           motionHoldUntil = Math.max(motionHoldUntil, now + MOTION_REFRESH_HOLD_MS);
         }
-        // A lower exit threshold plus a short hold prevents rapid STILL/MOTION flicker.
-        const exitThreshold = Math.max(baselineScore + 0.1, threshold - 0.3);
-        if (now >= motionHoldUntil && motionScore < exitThreshold) isMotion = false;
+        // Exit lower than it entered, and only after a hold, so the display does
+        // not flicker. The gap scales with the adaptive margin instead of being
+        // a fixed 0.3, which would swamp a low threshold in a quiet room.
+        const exitLimit = baselineMean + (fastLimit - baselineMean) * MOTION_EXIT_FRACTION;
+        if (now >= motionHoldUntil && fastScore < exitLimit) isMotion = false;
+      }
+
+      // --- slow path: SIGNAL SHIFT ---
+      const slowLimit = slowThreshold();
+      if (slowLimit !== null && slowScore !== null) {
+        if (slowScore >= slowLimit) {
+          isShift = true;
+          shiftHoldUntil = now + SHIFT_HOLD_MS;
+        } else if (isShift && now >= shiftHoldUntil && slowScore < slowLimit * MOTION_EXIT_FRACTION) {
+          isShift = false;
+        }
       }
     }
 
@@ -665,8 +877,11 @@
       const now = performance.now();
 
       // After a stall (Wi-Fi drop, ESP reset) the first new sample would otherwise
-      // produce one huge fake delta, so the window restarts instead.
-      if (lastSampleAt && now - lastSampleAt > SAMPLE_GAP_RESET_MS) rollingWindow.length = 0;
+      // produce one huge fake delta, so both windows restart instead.
+      if (lastSampleAt && now - lastSampleAt > SAMPLE_GAP_RESET_MS) {
+        rollingWindow.length = 0;
+        slowWindow.length = 0;
+      }
 
       currentRssi = value;
       lastSampleAt = now;
@@ -676,21 +891,38 @@
       rssiHistory.push(value);
       if (rssiHistory.length > RSSI_BUFFER_SIZE) rssiHistory.shift();
 
-      // The fixed-size rolling window keeps the score responsive and memory bounded.
+      // Both windows are fixed size, which keeps the scores responsive and the
+      // memory use flat no matter how long the dashboard runs.
       rollingWindow.push(value);
       if (rollingWindow.length > MOTION_WINDOW_SIZE) rollingWindow.shift();
-      motionScore = calculateMotionScore();
+      slowWindow.push(value);
+      if (slowWindow.length > SLOW_WINDOW_SIZE) slowWindow.shift();
+
+      fastScore = calculateFastScore();
+      slowScore = calculateSlowScore();
 
       if (isCalibrating) {
-        if (motionScore !== null && now - calibrationStartedAt > CALIBRATION_SETTLE_MS) {
-          calibrationScores.push(motionScore);
+        if (now - calibrationStartedAt > CALIBRATION_SETTLE_MS) {
+          if (fastScore !== null) calibrationScores.push(fastScore);
+          calibrationRssi.push(value);
         }
         // Also finish here, not only in the paint loop: a background tab throttles
         // requestAnimationFrame and calibration would otherwise never complete.
         if (now - calibrationStartedAt >= CALIBRATION_MS) finishCalibration(now);
       } else {
-        evaluateMotion(now);
+        evaluateDetection(now);
+
+        // Peak hold for the physical distance experiments.
+        if (fastScore !== null) peakFast = Math.max(peakFast, fastScore);
+        if (slowScore !== null) peakSlow = Math.max(peakSlow, slowScore);
+        if (baselineMean !== null) peakActivity = Math.max(peakActivity, activityRatio());
       }
+
+      // Keep the detection graph in step with the RSSI graph.
+      scoreHistory.push(fastScore);
+      thresholdHistory.push(fastThreshold());
+      if (scoreHistory.length > RSSI_BUFFER_SIZE) scoreHistory.shift();
+      if (thresholdHistory.length > RSSI_BUFFER_SIZE) thresholdHistory.shift();
     }
 
     function parseSerialLine(rawLine) {
@@ -712,13 +944,21 @@
       const now = performance.now();
       if (!canCalibrate(now)) return;
 
-      // Calibration learns the normal variation while the radio link is quiet.
-      baselineScore = null;
-      motionScore = null;
+      // Calibration measures the link's own background restlessness so the
+      // threshold can be set relative to it instead of guessed.
+      baselineMean = null;
+      baselineStd = null;
+      baselineRssi = null;
+      baselineRssiStd = null;
+      fastScore = null;
+      slowScore = null;
       isMotion = false;
+      isShift = false;
       motionHoldUntil = 0;
+      shiftHoldUntil = 0;
       rollingWindow.length = 0;
       calibrationScores.length = 0;
+      calibrationRssi.length = 0;
       calibrationFailure = "";
       isCalibrating = true;
       calibrationStartedAt = now;
@@ -729,7 +969,11 @@
       if (!isCalibrating) return;
       isCalibrating = false;
       calibrationScores.length = 0;
-      baselineScore = null;
+      calibrationRssi.length = 0;
+      baselineMean = null;
+      baselineStd = null;
+      baselineRssi = null;
+      baselineRssiStd = null;
       calibrationFailure = reason;
     }
 
@@ -739,18 +983,45 @@
       const samplesAreFresh = lastSampleAt !== 0 && now - lastSampleAt < SAMPLE_WARNING_MS;
 
       if (!samplesAreFresh || calibrationScores.length < MIN_CALIBRATION_SCORES) {
-        baselineScore = null;
+        baselineMean = null;
+        baselineStd = null;
         calibrationScores.length = 0;
+        calibrationRssi.length = 0;
         calibrationFailure = "Calibration did not receive enough samples. Check the ESP32 and try again.";
         return;
       }
 
-      baselineScore = calibrationScores.reduce((sum, score) => sum + score, 0) / calibrationScores.length;
+      // Two things are learned here: how agitated a quiet link normally is
+      // (mean + standard deviation of the fast score), and what its average
+      // signal level is (mean + standard deviation of raw RSSI). The first sets
+      // the fast threshold, the second sets the slow one.
+      const fast = meanAndStd(calibrationScores);
+      const rssi = meanAndStd(calibrationRssi);
+      baselineMean = fast.mean;
+      baselineStd = fast.std;
+      baselineRssi = rssi.mean;
+      baselineRssiStd = rssi.std;
+
       calibrationScores.length = 0;
+      calibrationRssi.length = 0;
       calibrationFailure = "";
       isMotion = false;
+      isShift = false;
       motionHoldUntil = 0;
-      evaluateMotion(now);
+      shiftHoldUntil = 0;
+      resetPeak();
+      slowScore = calculateSlowScore();
+      evaluateDetection(now);
+    }
+
+    // A plain-language summary of the measured noise floor, so the dashboard can
+    // say "Low / Medium / High" instead of only showing a decimal.
+    function noiseLabel() {
+      if (baselineMean === null) return "—";
+      const noise = baselineMean + baselineStd;
+      if (noise < 0.15) return "Low";
+      if (noise < 0.6) return "Medium";
+      return "High";
     }
 
     // ------------------------------------------------------------------
@@ -1025,6 +1296,15 @@
       elements.diagLastLine.textContent = lastRawLine || "—";
       elements.diagError.textContent = lastSerialError || "—";
       elements.diagCleanup.textContent = cleanupCompleted ? "YES" : "NO";
+
+      const n = (v, digits = 3) => (v === null || v === undefined ? "—" : v.toFixed(digits));
+      elements.diagBaseline.textContent = baselineMean === null
+        ? "Not calibrated" : `${n(baselineMean)} / ${n(baselineStd)}`;
+      elements.diagBaselineRssi.textContent = baselineRssi === null
+        ? "Not calibrated" : `${n(baselineRssi, 1)} dBm / ${n(baselineRssiStd, 2)}`;
+      elements.diagFast.textContent = `${n(fastScore)} / ${n(fastThreshold())}`;
+      elements.diagSlow.textContent = `${n(slowScore, 2)} dB / ${n(slowThreshold(), 2)} dB`;
+      elements.diagPeak.textContent = `${n(peakFast)} / ${n(peakSlow, 2)} dB`;
     }
 
     function updateInterface(now) {
@@ -1035,7 +1315,7 @@
       const busy = isBusy();
       const sampleAge = lastSampleAt ? now - lastSampleAt : Infinity;
       const hasFreshSample = live && sampleAge < SAMPLE_WARNING_MS;
-      const threshold = detectionThreshold();
+      const threshold = fastThreshold();
 
       elements.connectionPill.classList.toggle("connected", hasFreshSample);
       elements.connectionText.textContent = busy
@@ -1043,27 +1323,47 @@
         : (live ? (hasFreshSample ? "Connected" : "No signal") : "Disconnected");
 
       elements.rssiValue.textContent = currentRssi === null ? "—" : String(currentRssi);
-      elements.scoreValue.textContent = motionScore === null ? "—" : motionScore.toFixed(2);
+      elements.scoreValue.textContent = fastScore === null ? "—" : fastScore.toFixed(2);
       elements.thresholdValue.textContent = threshold === null ? "—" : threshold.toFixed(2);
-      elements.baselineValue.textContent = baselineScore === null ? "Not calibrated" : baselineScore.toFixed(2);
+      elements.slowValue.textContent = slowScore === null ? "—" : slowScore.toFixed(1);
+      elements.noiseValue.textContent = noiseLabel();
+      elements.baselineValue.textContent = baselineMean === null
+        ? "Not calibrated" : `${baselineMean.toFixed(2)} ± ${baselineStd.toFixed(2)}`;
       elements.thresholdDetail.textContent = threshold === null ? "—" : threshold.toFixed(2);
+
+      // RF activity readout: a level relative to the trigger point, never a position.
+      const ratio = activityRatio();
+      const level = activityLabel(ratio);
+      elements.rfCard.classList.remove("low", "medium", "high");
+      elements.rfCard.classList.add(level.toLowerCase());
+      elements.rfLevel.textContent = live ? level : "—";
+      elements.rfPercent.textContent = live && fastScore !== null ? `${Math.round(ratio * 100)}%` : "—";
+      elements.peakValue.textContent = peakActivity > 0
+        ? `${Math.round(peakActivity * 100)}%`
+        : (peakFast > 0 ? `${peakFast.toFixed(2)} raw` : "—");
       elements.sampleRateValue.textContent = sampleRate.toFixed(1);
       elements.sensitivityOutput.textContent = sensitivityName();
 
-      elements.stateHero.classList.remove("still", "motion");
+      elements.stateHero.classList.remove("still", "motion", "shift");
       if (!live) {
         elements.stateLabel.textContent = "WAITING";
         elements.stateCaption.textContent = "Connect the sensor to start";
       } else if (isCalibrating) {
         elements.stateLabel.textContent = "CALIBRATING";
         elements.stateCaption.textContent = "Keep the environment still";
-      } else if (baselineScore === null) {
+      } else if (baselineMean === null) {
         elements.stateLabel.textContent = "CALIBRATE";
         elements.stateCaption.textContent = "Keep still, then press Calibrate";
       } else if (isMotion) {
         elements.stateHero.classList.add("motion");
         elements.stateLabel.textContent = "MOTION";
-        elements.stateCaption.textContent = "Signal variation is above the threshold";
+        elements.stateCaption.textContent = "Fast signal change is above the threshold";
+      } else if (isShift) {
+        // Deliberately not called "person detected": a drifting average only
+        // says the radio path changed, not what changed it.
+        elements.stateHero.classList.add("shift");
+        elements.stateLabel.textContent = "SIGNAL SHIFT";
+        elements.stateCaption.textContent = "Signal level moved from baseline — cause unknown";
       } else {
         elements.stateHero.classList.add("still");
         elements.stateLabel.textContent = "STILL";
@@ -1074,7 +1374,7 @@
       if (isCalibrating) {
         progress = Math.min(100, ((now - calibrationStartedAt) / CALIBRATION_MS) * 100);
         elements.calibrationText.textContent = `${Math.round(progress)}%`;
-      } else if (baselineScore !== null) {
+      } else if (baselineMean !== null) {
         progress = 100;
         elements.calibrationText.textContent = "Complete";
       } else {
@@ -1088,7 +1388,7 @@
       elements.calibrateButton.disabled = !canCalibrate(now);
       elements.calibrateButton.textContent = isCalibrating
         ? "Calibrating…"
-        : (baselineScore === null ? "Calibrate" : "Recalibrate");
+        : (baselineMean === null ? "Calibrate" : "Recalibrate");
 
       if (!serialSupported) {
         setStatus("Web Serial is not supported in this browser.", "Open this page in desktop Chrome or Edge at localhost.", true);
@@ -1108,13 +1408,16 @@
       } else if (!hasFreshSample) {
         setStatus("RSSI samples have stopped.", "Check Wi-Fi and USB. The firmware retries Wi-Fi automatically.", true);
       } else if (isCalibrating) {
-        setStatus("CALIBRATING… Keep the environment still.", "Quiet measurements are building the baseline for about 5 seconds.");
+        setStatus("CALIBRATING… Measuring normal RF noise.",
+                  "Keep the phone, the ESP32 and the environment still for about 5 seconds.");
       } else if (calibrationFailure) {
         setStatus(calibrationFailure, "Wait for a steady sample rate, then press Calibrate.", true);
-      } else if (baselineScore === null) {
-        setStatus("Connected. Keep the environment still and press Calibrate.", "Calibration takes about 5 seconds.");
+      } else if (baselineMean === null) {
+        setStatus("Connected. Keep the environment still and press Calibrate.",
+                  "It measures the link\u2019s normal RF noise for about 5 seconds.");
       } else {
-        setStatus("Ready — move around the Wi-Fi link.", "Motion appears when the score rises above the displayed threshold.");
+        setStatus(`Ready — move around the Wi-Fi link. RF noise measured as ${noiseLabel().toLowerCase()}.`,
+                  "MOTION appears when the fast change rises above the adaptive threshold.");
       }
     }
 
@@ -1122,8 +1425,9 @@
     // Graph
     // ------------------------------------------------------------------
 
-    function drawGraph() {
-      const canvas = elements.canvas;
+    // Sizes a canvas to its CSS box on the current display, and hands back a
+    // context already scaled so the rest of the drawing code can use CSS pixels.
+    function prepareCanvas(canvas) {
       const rect = canvas.getBoundingClientRect();
       const width = Math.max(1, rect.width);
       const height = Math.max(1, rect.height);
@@ -1137,6 +1441,11 @@
       const context = canvas.getContext("2d");
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       context.clearRect(0, 0, width, height);
+      return { context, width, height };
+    }
+
+    function drawGraph() {
+      const { context, width, height } = prepareCanvas(elements.canvas);
 
       const left = 43;
       const right = 14;
@@ -1177,7 +1486,7 @@
         y: top + ((maxRssi - value) / (maxRssi - minRssi)) * graphHeight
       }));
 
-      const lineColor = isMotion ? "#ff9566" : (baselineScore === null ? "#5ab5ff" : "#62e6ae");
+      const lineColor = isMotion ? "#ff9566" : (isShift ? "#ffc86a" : (baselineMean === null ? "#5ab5ff" : "#62e6ae"));
       const gradient = context.createLinearGradient(0, top, 0, top + graphHeight);
       gradient.addColorStop(0, isMotion ? "rgba(255, 149, 102, .23)" : "rgba(90, 181, 255, .2)");
       gradient.addColorStop(1, "rgba(5, 13, 24, 0)");
@@ -1206,6 +1515,145 @@
       context.fill();
     }
 
+    // Fast change plotted against its threshold. Seeing the line cross the dashes
+    // is what makes "why did it say MOTION?" obvious rather than magical.
+    function drawScoreGraph() {
+      const { context, width, height } = prepareCanvas(elements.scoreCanvas);
+      const left = 43;
+      const right = 14;
+      const top = 12;
+      const bottom = 16;
+      const graphWidth = width - left - right;
+      const graphHeight = height - top - bottom;
+
+      const scores = scoreHistory.filter((v) => v !== null);
+      const limit = fastThreshold();
+      const peakSeen = scores.length ? Math.max(...scores) : 0;
+      // Always keep the threshold comfortably on screen so the comparison reads.
+      const maxValue = Math.max(0.2, peakSeen * 1.15, (limit ?? 0) * 1.4);
+
+      const y = (value) => top + graphHeight - (Math.min(value, maxValue) / maxValue) * graphHeight;
+
+      context.font = "11px ui-sans-serif, system-ui, sans-serif";
+      context.textAlign = "right";
+      context.textBaseline = "middle";
+      for (let line = 0; line <= 2; line += 1) {
+        const value = (maxValue * (2 - line)) / 2;
+        const lineY = top + (graphHeight * line) / 2;
+        context.strokeStyle = "rgba(143, 174, 210, 0.09)";
+        context.beginPath();
+        context.moveTo(left, lineY);
+        context.lineTo(width - right, lineY);
+        context.stroke();
+        context.fillStyle = "rgba(145, 164, 187, 0.7)";
+        context.fillText(value.toFixed(2), left - 8, lineY);
+      }
+
+      if (scoreHistory.length < 2) {
+        context.fillStyle = "rgba(145, 164, 187, 0.65)";
+        context.textAlign = "center";
+        context.fillText("Fast change will appear here", left + graphWidth / 2, top + graphHeight / 2);
+        return;
+      }
+
+      const xFor = (index) => left + (index / (RSSI_BUFFER_SIZE - 1)) * graphWidth;
+
+      // Threshold trace, drawn as a dashed line because it is a decision level,
+      // not a measurement.
+      context.save();
+      context.setLineDash([5, 4]);
+      context.strokeStyle = "rgba(255, 200, 106, .72)";
+      context.lineWidth = 1.5;
+      context.beginPath();
+      let started = false;
+      thresholdHistory.forEach((value, index) => {
+        if (value === null) { started = false; return; }
+        const pointY = y(value);
+        if (!started) { context.moveTo(xFor(index), pointY); started = true; }
+        else context.lineTo(xFor(index), pointY);
+      });
+      context.stroke();
+      context.restore();
+
+      // Score trace.
+      context.beginPath();
+      started = false;
+      scoreHistory.forEach((value, index) => {
+        if (value === null) { started = false; return; }
+        const pointY = y(value);
+        if (!started) { context.moveTo(xFor(index), pointY); started = true; }
+        else context.lineTo(xFor(index), pointY);
+      });
+      context.strokeStyle = isMotion ? "#ff9566" : "#5ab5ff";
+      context.lineWidth = 1.8;
+      context.lineJoin = "round";
+      context.stroke();
+    }
+
+    // The RF activity field: concentric rings whose reach and brightness follow
+    // the disturbance level. It is deliberately symmetric and has no blips or
+    // bearings, because a single RSSI link carries no directional information.
+    function drawActivityField(now) {
+      const { context, width, height } = prepareCanvas(elements.activityCanvas);
+      const centreX = width / 2;
+      const centreY = height / 2;
+      const maxRadius = Math.min(width, height) / 2 - 6;
+      if (maxRadius <= 0) return;
+
+      const ratio = isLive() ? activityRatio() : 0;
+      const level = Math.min(1, ratio / 2);          // threshold sits at half scale
+      const colour = ratio >= 1 ? "255, 149, 102" : (ratio >= 0.5 ? "255, 200, 106" : "90, 181, 255");
+
+      // Static guide rings so the field still reads as a scale when it is quiet.
+      for (let ring = 1; ring <= 4; ring += 1) {
+        context.beginPath();
+        context.arc(centreX, centreY, (maxRadius * ring) / 4, 0, Math.PI * 2);
+        context.strokeStyle = "rgba(143, 174, 210, 0.09)";
+        context.lineWidth = 1;
+        context.stroke();
+      }
+
+      // The threshold ring: crossing it is exactly what triggers MOTION.
+      context.save();
+      context.setLineDash([4, 4]);
+      context.beginPath();
+      context.arc(centreX, centreY, maxRadius * 0.5, 0, Math.PI * 2);
+      context.strokeStyle = "rgba(255, 200, 106, 0.4)";
+      context.lineWidth = 1.2;
+      context.stroke();
+      context.restore();
+
+      // Filled disturbance disc.
+      const radius = Math.max(4, maxRadius * level);
+      const gradient = context.createRadialGradient(centreX, centreY, 0, centreX, centreY, Math.max(radius, 1));
+      gradient.addColorStop(0, `rgba(${colour}, .46)`);
+      gradient.addColorStop(1, `rgba(${colour}, .03)`);
+      context.beginPath();
+      context.arc(centreX, centreY, radius, 0, Math.PI * 2);
+      context.fillStyle = gradient;
+      context.fill();
+      context.beginPath();
+      context.arc(centreX, centreY, radius, 0, Math.PI * 2);
+      context.strokeStyle = `rgba(${colour}, .8)`;
+      context.lineWidth = 1.6;
+      context.stroke();
+
+      // An outward ripple while the level is high, so movement is unmistakable.
+      if (ratio >= 1) {
+        const phase = ((now % 1400) / 1400);
+        context.beginPath();
+        context.arc(centreX, centreY, maxRadius * (0.35 + phase * 0.65), 0, Math.PI * 2);
+        context.strokeStyle = `rgba(${colour}, ${(1 - phase) * 0.5})`;
+        context.lineWidth = 2;
+        context.stroke();
+      }
+
+      context.beginPath();
+      context.arc(centreX, centreY, 3, 0, Math.PI * 2);
+      context.fillStyle = `rgba(${colour}, .95)`;
+      context.fill();
+    }
+
     function animationLoop(now) {
       if (isCalibrating) {
         if (lastSampleAt && now - lastSampleAt > SAMPLE_WARNING_MS) {
@@ -1218,6 +1666,8 @@
       if (now - lastPaintAt >= 100) {
         updateInterface(now);
         drawGraph();
+        drawScoreGraph();
+        drawActivityField(now);
         lastPaintAt = now;
       }
       requestAnimationFrame(animationLoop);
@@ -1230,9 +1680,13 @@
     elements.connectButton.addEventListener("click", connectSerial);
     elements.disconnectButton.addEventListener("click", () => teardown(session, null));
     elements.calibrateButton.addEventListener("click", startCalibration);
+    elements.resetPeakButton.addEventListener("click", () => {
+      resetPeak();
+      updateInterface(performance.now());
+    });
     elements.sensitivity.addEventListener("input", () => {
       const now = performance.now();
-      if (baselineScore !== null) evaluateMotion(now);
+      if (baselineMean !== null) evaluateDetection(now);
       updateInterface(now);
     });
 
