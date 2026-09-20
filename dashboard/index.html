@@ -273,6 +273,14 @@
 
     .fine-print { margin: 4px 2px 0; color: #667991; font-size: .67rem; line-height: 1.45; text-align: center; }
 
+    .diagnostics { border: 1px solid var(--border); border-radius: 13px; background: var(--panel-soft); padding: 4px 14px; }
+    .diagnostics summary { padding: 10px 0; color: var(--muted); font-size: .78rem; font-weight: 680; cursor: pointer; }
+    .diagnostics-body { padding: 2px 0 12px; }
+    .diag-row { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid rgba(143, 174, 210, .08); font-size: .74rem; }
+    .diag-row:first-child { border-top: 0; }
+    .diag-row span:first-child { color: var(--muted); }
+    .diag-row span:last-child { text-align: right; word-break: break-word; max-width: 60%; }
+
     @media (max-width: 820px) {
       .dashboard { grid-template-columns: 1fr; }
       .side { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
@@ -404,6 +412,19 @@
         </section>
 
         <p class="fine-print">RSSI measures radio-link change only. It cannot locate a person or determine pose, direction, or distance.</p>
+
+        <details class="diagnostics">
+          <summary>Diagnostics</summary>
+          <div class="diagnostics-body">
+            <div class="diag-row"><span>Pipeline stage</span><span id="diagStage">Not connected</span></div>
+            <div class="diag-row"><span>Bytes received</span><span id="diagBytes">0</span></div>
+            <div class="diag-row"><span>Lines received</span><span id="diagLines">0</span></div>
+            <div class="diag-row"><span>RSSI samples parsed</span><span id="diagSamples">0</span></div>
+            <div class="diag-row"><span>Last sample age</span><span id="diagLastSample">—</span></div>
+            <div class="diag-row"><span>Last line seen</span><span id="diagLastLine">—</span></div>
+            <div class="diag-row"><span>Last error</span><span id="diagError">—</span></div>
+          </div>
+        </details>
       </aside>
     </section>
   </main>
@@ -439,7 +460,14 @@
       disconnectButton: document.querySelector("#disconnectButton"),
       statusCard: document.querySelector("#statusCard"),
       statusMessage: document.querySelector("#statusMessage"),
-      canvas: document.querySelector("#rssiCanvas")
+      canvas: document.querySelector("#rssiCanvas"),
+      diagStage: document.querySelector("#diagStage"),
+      diagBytes: document.querySelector("#diagBytes"),
+      diagLines: document.querySelector("#diagLines"),
+      diagSamples: document.querySelector("#diagSamples"),
+      diagLastSample: document.querySelector("#diagLastSample"),
+      diagLastLine: document.querySelector("#diagLastLine"),
+      diagError: document.querySelector("#diagError")
     };
 
     const serialSupported = "serial" in navigator;
@@ -472,6 +500,16 @@
     let calibrationFailure = "";
     let lastPaintAt = 0;
 
+    // Diagnostics: separate from the motion algorithm, these just answer
+    // "how far did data get through the pipeline?" for a physical tester.
+    let bytesReceivedTotal = 0;
+    let linesSeenTotal = 0;
+    let samplesParsedTotal = 0;
+    let lastByteAt = 0;
+    let lastLineAt = 0;
+    let lastRawLine = "";
+    let lastSerialError = "";
+
     function resetMeasurements(clearGraph = true) {
       currentRssi = null;
       motionScore = null;
@@ -488,6 +526,14 @@
       rollingWindow.length = 0;
       calibrationFailure = "";
       if (clearGraph) rssiHistory.length = 0;
+
+      bytesReceivedTotal = 0;
+      linesSeenTotal = 0;
+      samplesParsedTotal = 0;
+      lastByteAt = 0;
+      lastLineAt = 0;
+      lastRawLine = "";
+      lastSerialError = "";
     }
 
     function sensitivityMargin() {
@@ -536,6 +582,7 @@
       currentRssi = value;
       lastSampleAt = now;
       sampleCount += 1;
+      samplesParsedTotal += 1;
 
       rssiHistory.push(value);
       if (rssiHistory.length > RSSI_BUFFER_SIZE) rssiHistory.shift();
@@ -575,10 +622,23 @@
           const { value, done } = await localReader.read();
           if (done) break;
 
+          // A chunk arriving at all proves bytes are actually reaching the browser,
+          // which is the first thing to check when the pipeline looks silent.
+          bytesReceivedTotal += value.byteLength;
+          lastByteAt = performance.now();
+
           serialBuffer += decoder.decode(value, { stream: true });
+          // Partial lines are normal: USB chunks split wherever the OS feels like it,
+          // so only fully-terminated lines are processed; the remainder waits for more bytes.
           const lines = serialBuffer.split("\n");
           serialBuffer = lines.pop() || "";
-          for (const line of lines) parseSerialLine(line);
+          for (const line of lines) {
+            linesSeenTotal += 1;
+            lastLineAt = performance.now();
+            const trimmed = line.trim();
+            if (trimmed) lastRawLine = trimmed;
+            parseSerialLine(line);
+          }
 
           // Corrupt input without newlines must not grow memory forever.
           if (serialBuffer.length > 4096) serialBuffer = serialBuffer.slice(-4096);
@@ -586,6 +646,7 @@
       } catch (error) {
         if (token === connectionToken && connected) {
           console.warn("Serial read stopped:", error);
+          lastSerialError = error.message || String(error);
         }
       } finally {
         if (localReader) localReader.releaseLock();
@@ -619,6 +680,16 @@
 
         await selectedPort.open({ baudRate: BAUD_RATE, bufferSize: 1024 });
 
+        // Native USB-CDC firmware (like this ESP32-S3) only transmits once the host
+        // raises DTR — that's how the chip's USB stack knows a listener is attached.
+        // Serial terminal apps do this automatically; Web Serial does not, so without
+        // this call the port opens fine but zero bytes ever arrive.
+        try {
+          await selectedPort.setSignals({ dataTerminalReady: true, requestToSend: true });
+        } catch (signalError) {
+          console.warn("Could not set DTR/RTS signals:", signalError);
+        }
+
         connectionToken += 1;
         activePort = selectedPort;
         rememberedPort = selectedPort;
@@ -632,6 +703,7 @@
           connectionNote = "Connection cancelled. Press Connect ESP32 when you are ready.";
         } else {
           console.error("Could not open serial port:", error);
+          lastSerialError = error.message || String(error);
           connectionNote = "Could not open the port. Close PlatformIO Serial Monitor, reconnect USB, and try again.";
         }
       } finally {
@@ -702,6 +774,27 @@
       evaluateMotion(now);
     }
 
+    // Names exactly where the pipeline has gotten to, so a physical tester can say
+    // "it's stuck at X" instead of just "it doesn't work".
+    function diagnosticStage(now) {
+      if (!connected) return "Not connected";
+      if (!lastByteAt) return "Serial port open — waiting for data";
+      if (!lastLineAt) return "Receiving bytes — no complete line yet";
+      if (!lastSampleAt) return "Receiving lines — no RSSI sample yet";
+      if (now - lastSampleAt < SAMPLE_WARNING_MS) return "RSSI streaming";
+      return "No signal — RSSI samples stopped";
+    }
+
+    function updateDiagnostics(now) {
+      elements.diagStage.textContent = diagnosticStage(now);
+      elements.diagBytes.textContent = String(bytesReceivedTotal);
+      elements.diagLines.textContent = String(linesSeenTotal);
+      elements.diagSamples.textContent = String(samplesParsedTotal);
+      elements.diagLastSample.textContent = lastSampleAt ? `${((now - lastSampleAt) / 1000).toFixed(1)} s ago` : "—";
+      elements.diagLastLine.textContent = lastRawLine || "—";
+      elements.diagError.textContent = lastSerialError || "—";
+    }
+
     function updateSampleRate(now) {
       const elapsed = now - rateWindowStartedAt;
       if (elapsed < 1000) return;
@@ -728,6 +821,7 @@
 
     function updateInterface(now) {
       updateSampleRate(now);
+      updateDiagnostics(now);
       const sampleAge = lastSampleAt ? now - lastSampleAt : Infinity;
       const hasFreshSample = connected && sampleAge < SAMPLE_WARNING_MS;
       const threshold = detectionThreshold();
