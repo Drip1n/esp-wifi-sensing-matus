@@ -6,3 +6,9 @@
 
 # Local Wi-Fi credentials must never be committed.
 include/secrets.h
+
+# Recorded CSI datasets stay out of the repository: they are large, and they
+# are experiment data rather than source.
+*.jsonl
+
+node_modules/

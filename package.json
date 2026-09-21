@@ -1,0 +1,10 @@
+{
+  "name": "esp-wifi-sensing-csi",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "Host-side tests for the Wi-Fi CSI dashboard (dashboard/csi-core.js, dashboard/serial-link.js).",
+  "scripts": {
+    "test": "node --test --test-timeout=30000 \"tests/**/*.test.mjs\""
+  }
+}

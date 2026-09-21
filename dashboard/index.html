@@ -355,6 +355,52 @@
     .small-button { min-height: 34px; padding: 0 12px; font-size: .72rem; }
     .honesty { margin: 4px 2px 0; color: #667991; font-size: .67rem; line-height: 1.5; }
     .honesty strong { color: #8fa3ba; }
+
+    /* ---- v0.1.1: mode switch, recording, replay ---- */
+    .segmented { display: inline-flex; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: rgba(6, 15, 28, .58); gap: 2px; }
+    .segmented button {
+      min-height: 30px; padding: 0 14px; border: 0; border-radius: 999px;
+      color: var(--muted); background: transparent; font-size: .74rem; font-weight: 740;
+      letter-spacing: .06em; text-transform: uppercase;
+    }
+    .segmented button[aria-pressed="true"] { color: #06111e; background: linear-gradient(135deg, #73c7ff, #4ea8ef); }
+    .segmented button:hover:not([aria-pressed="true"]) { color: var(--text); transform: none; }
+    .header-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+
+    .quality-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 20px; border-bottom: 1px solid var(--border);
+    }
+    .quality-badge {
+      display: inline-flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 12px;
+      border: 1px solid var(--border); border-radius: 999px;
+      font-size: .72rem; font-weight: 780; letter-spacing: .08em; text-transform: uppercase;
+    }
+    .quality-badge .dot { width: 7px; height: 7px; }
+    .quality-badge.good { color: #c8fbe8; border-color: rgba(98, 230, 174, .3); }
+    .quality-badge.good .dot { background: var(--still); }
+    .quality-badge.degraded { color: #ffe3ad; border-color: rgba(255, 200, 106, .3); }
+    .quality-badge.degraded .dot { background: var(--warning); }
+    .quality-badge.bad { color: #ffd0c0; border-color: rgba(255, 149, 102, .35); }
+    .quality-badge.bad .dot { background: var(--motion); }
+    .quality-reason { color: var(--muted); font-size: .72rem; text-align: right; }
+
+    .field { display: block; margin-top: 12px; }
+    .field-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: .72rem; font-weight: 680; letter-spacing: .03em; text-transform: uppercase; }
+    input[type="text"], select {
+      width: 100%; min-height: 38px; padding: 0 11px;
+      border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); background: rgba(6, 15, 28, .58); font-size: .8rem;
+    }
+    .recording-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: var(--motion); animation: recpulse 1.4s ease-in-out infinite; }
+    @keyframes recpulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+    .record-button[data-recording="true"] { color: #ffd0c0; background: rgba(160, 52, 32, .28); border-color: rgba(255, 149, 102, .35); }
+    .replay-scrub { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: rgba(143, 174, 210, .11); }
+    .replay-scrub div { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--blue), #7ce8d2); }
+    .controls-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+    .hidden { display: none !important; }
+    .experimental-tag { margin-left: 6px; padding: 1px 6px; border: 1px solid rgba(255, 200, 106, .3); border-radius: 5px; color: var(--warning); font-size: .56rem; font-weight: 800; letter-spacing: .09em; vertical-align: middle; }
+    .metric-sub { margin-top: 4px; color: var(--muted); font-size: .66rem; }
   </style>
 </head>
 <body>
@@ -364,17 +410,27 @@
         <div class="brand-mark" aria-hidden="true"></div>
         <div>
           <h1>Wi-Fi CSI Explorer</h1>
-          <p class="subtitle">ESP32-S3 &middot; Channel State Information v0.1</p>
+          <p class="subtitle">ESP32-S3 &middot; Channel State Information v0.1 &middot; record / replay</p>
         </div>
       </div>
-      <div class="connection-pill" id="connectionPill" aria-live="polite">
-        <span class="dot" aria-hidden="true"></span>
-        <span id="connectionText">Disconnected</span>
+      <div class="header-tools">
+        <div class="segmented" role="group" aria-label="Input mode">
+          <button id="modeLiveButton" type="button" aria-pressed="true">Live</button>
+          <button id="modeReplayButton" type="button" aria-pressed="false">Replay</button>
+        </div>
+        <div class="connection-pill" id="connectionPill" aria-live="polite">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="connectionText">Disconnected</span>
+        </div>
       </div>
     </header>
 
     <section class="dashboard">
       <section class="card primary" aria-label="CSI readings">
+        <div class="quality-row">
+          <span class="quality-badge" id="qualityBadge"><span class="dot" aria-hidden="true"></span><span id="qualityLevel">Unknown</span></span>
+          <span class="quality-reason" id="qualityReason">Waiting for frames</span>
+        </div>
         <div class="metrics">
           <div class="metric">
             <div class="metric-name">Packet RSSI</div>
@@ -383,25 +439,34 @@
           <div class="metric">
             <div class="metric-name">CSI frames / s</div>
             <div class="metric-value" id="rateValue">0.0</div>
+            <div class="metric-sub" id="rateSub">target 20 Hz</div>
           </div>
           <div class="metric">
             <div class="metric-name">Sub-carriers</div>
             <div class="metric-value" id="subcarrierValue">&mdash;</div>
           </div>
           <div class="metric">
-            <div class="metric-name">Channel activity</div>
+            <div class="metric-name">CSI activity<span class="experimental-tag">EXP</span></div>
             <div class="metric-value" id="activityValue">&mdash;</div>
+            <div class="metric-sub">channel change, not motion</div>
           </div>
         </div>
 
         <div class="graph-wrap">
           <div class="section-head">
             <h2>Sub-carrier magnitude</h2>
-            <span class="legend"><span><i class="now"></i>now</span><span><i class="base"></i>baseline</span></span>
+            <div class="header-tools">
+              <div class="segmented" role="group" aria-label="Magnitude mode">
+                <button id="magNormalisedButton" type="button" aria-pressed="true">Normalised</button>
+                <button id="magRawButton" type="button" aria-pressed="false">Raw</button>
+              </div>
+              <span class="legend"><span><i class="now"></i>now</span><span><i class="base"></i>baseline</span></span>
+            </div>
           </div>
           <div class="spectrum-shell">
             <canvas id="spectrumCanvas" role="img" aria-label="CSI magnitude for each OFDM sub-carrier"></canvas>
           </div>
+          <p class="honesty" id="magnitudeNote"></p>
 
           <div class="section-head section-head-second">
             <h2>Change vs baseline</h2>
@@ -417,7 +482,7 @@
         <section class="card" aria-labelledby="linkHeading">
           <div class="section-head">
             <h2 id="linkHeading">Link</h2>
-            <span class="section-note">One radio path</span>
+            <span class="section-note" id="linkIdentity">esp01 &middot; esp01-ap</span>
           </div>
           <div class="algorithm-list">
             <div class="algorithm-row">
@@ -436,6 +501,10 @@
               <span class="algorithm-key">CSI length</span>
               <span class="algorithm-value" id="lenValue">&mdash;</span>
             </div>
+            <div class="algorithm-row">
+              <span class="algorithm-key">Potential clipping</span>
+              <span class="algorithm-value" id="clipValue">&mdash;</span>
+            </div>
           </div>
 
           <div class="baseline-row">
@@ -452,11 +521,64 @@
           </div>
         </section>
 
-        <section class="card">
+        <section class="card" id="liveControls">
+          <div class="section-head"><h2>Live capture</h2><span class="section-note">ESP32 over USB</span></div>
           <div class="controls">
             <button class="connect-button" id="connectButton">Connect ESP32</button>
             <button id="clearBaselineButton" disabled>Clear baseline</button>
             <button id="disconnectButton" disabled>Disconnect</button>
+          </div>
+          <label class="field" for="labelInput">
+            <span class="field-label">Experiment label</span>
+            <input type="text" id="labelInput" placeholder="still, walk_direct, walk_off_axis&hellip;" maxlength="64" autocomplete="off">
+          </label>
+          <label class="field" for="noteInput">
+            <span class="field-label">Note (optional)</span>
+            <input type="text" id="noteInput" placeholder="AP 2.5 m away, door closed" maxlength="200" autocomplete="off">
+          </label>
+          <div class="controls-grid-3">
+            <button class="record-button" id="recordButton" style="grid-column: 1 / -1;" disabled>Start recording</button>
+          </div>
+          <div class="baseline-row">
+            <div>
+              <span class="baseline-key">Recording</span>
+              <span class="baseline-value" id="recordingState">Idle</span>
+            </div>
+            <span class="section-note" id="recordingSize">&mdash;</span>
+          </div>
+        </section>
+
+        <section class="card hidden" id="replayControls">
+          <div class="section-head"><h2>Replay</h2><span class="section-note">No ESP32 needed</span></div>
+          <div class="controls">
+            <button class="connect-button" id="loadButton">Load dataset&hellip;</button>
+          </div>
+          <input type="file" id="datasetInput" accept=".jsonl,.json,.txt,application/json" class="hidden">
+          <div class="controls-grid-3">
+            <button id="playButton" disabled>Play</button>
+            <button id="pauseButton" disabled>Pause</button>
+            <button id="restartButton" disabled>Restart</button>
+            <button id="stepButton" disabled>Step +1</button>
+            <button id="replayBaselineButton" disabled>Baseline</button>
+            <button id="replayClearBaselineButton" disabled>Clear base</button>
+          </div>
+          <label class="field" for="speedSelect">
+            <span class="field-label">Playback speed</span>
+            <select id="speedSelect">
+              <option value="0.25">0.25&times;</option>
+              <option value="0.5">0.5&times;</option>
+              <option value="1" selected>1&times;</option>
+              <option value="2">2&times;</option>
+              <option value="4">4&times;</option>
+            </select>
+          </label>
+          <div class="replay-scrub"><div id="replayScrub"></div></div>
+          <div class="baseline-row">
+            <div>
+              <span class="baseline-key">Dataset</span>
+              <span class="baseline-value" id="replayPosition">No dataset</span>
+            </div>
+            <span class="section-note" id="replayMeta">&mdash;</span>
           </div>
         </section>
 
@@ -470,23 +592,46 @@
 
         <p class="honesty">This shows <strong>how the radio channel changed</strong>, nothing more. A moving pattern means the
           propagation path changed &mdash; it does <strong>not</strong> identify a person, a distance, a direction or a pose.
+          <strong>CSI activity</strong> is an experimental descriptive number for comparing datasets, not a detector.
           Phase is not shown because raw ESP32 CSI phase carries uncorrected hardware timing offsets.</p>
 
         <details class="diagnostics">
           <summary>Diagnostics</summary>
           <div class="diagnostics-body">
+            <div class="diag-row"><span>Mode</span><span id="diagMode">LIVE</span></div>
             <div class="diag-row"><span>Connection state</span><span id="diagState">DISCONNECTED</span></div>
+            <div class="diag-row"><span>Node / link</span><span id="diagIdentity">esp01 / esp01-ap</span></div>
+            <div class="diag-row"><span>Data quality</span><span id="diagQuality">UNKNOWN</span></div>
             <div class="diag-row"><span>Port reference</span><span id="diagPort">NO</span></div>
             <div class="diag-row"><span>Reader active</span><span id="diagReader">NO</span></div>
             <div class="diag-row"><span>Read loop active</span><span id="diagLoop">NO</span></div>
             <div class="diag-row"><span>DTR/RTS</span><span id="diagSignals">UNKNOWN</span></div>
             <div class="diag-row"><span>Bytes received</span><span id="diagBytes">0</span></div>
             <div class="diag-row"><span>Lines received</span><span id="diagLines">0</span></div>
-            <div class="diag-row"><span>CSI frames parsed</span><span id="diagFrames">0</span></div>
-            <div class="diag-row"><span>Malformed lines</span><span id="diagBad">0</span></div>
+            <div class="diag-row"><span>CSI frames received</span><span id="diagReceived">0</span></div>
+            <div class="diag-row"><span>CSI frames processed</span><span id="diagFrames">0</span></div>
+            <div class="diag-row"><span>Malformed frames</span><span id="diagBad">0</span></div>
+            <div class="diag-row"><span>Malformed reasons</span><span id="diagBadReasons">&mdash;</span></div>
+            <div class="diag-row"><span>Unknown / info lines</span><span id="diagOther">0 / 0</span></div>
             <div class="diag-row"><span>Sequence gaps</span><span id="diagGaps">0</span></div>
-            <div class="diag-row"><span>Firmware rate / drops</span><span id="diagFirmware">&mdash;</span></div>
-            <div class="diag-row"><span>first_word_invalid</span><span id="diagFwi">&mdash;</span></div>
+            <div class="diag-row"><span>Estimated dropped frames</span><span id="diagDropped">0</span></div>
+            <div class="diag-row"><span>Duplicates / seq resets</span><span id="diagDupes">0 / 0</span></div>
+            <div class="diag-row"><span>Current frame rate</span><span id="diagRate">0.0 /s</span></div>
+            <div class="diag-row"><span>Mean frame rate</span><span id="diagMeanRate">0.0 /s</span></div>
+            <div class="diag-row"><span>Rate jitter</span><span id="diagJitter">&mdash;</span></div>
+            <div class="diag-row"><span>ESP queue drops</span><span id="diagQueueDrops">&mdash;</span></div>
+            <div class="diag-row"><span>ESP wrong-MAC drops</span><span id="diagMacDrops">&mdash;</span></div>
+            <div class="diag-row"><span>ESP oversized drops</span><span id="diagSizeDrops">&mdash;</span></div>
+            <div class="diag-row"><span>USB truncated / busy</span><span id="diagUsb">&mdash;</span></div>
+            <div class="diag-row"><span>ESP free heap</span><span id="diagHeap">&mdash;</span></div>
+            <div class="diag-row"><span>Firmware restarts seen</span><span id="diagRestarts">0</span></div>
+            <div class="diag-row"><span>Potential clipping</span><span id="diagClip">&mdash;</span></div>
+            <div class="diag-row"><span>Baseline</span><span id="diagBaseline">none</span></div>
+            <div class="diag-row"><span>Dataset frames</span><span id="diagDatasetFrames">&mdash;</span></div>
+            <div class="diag-row"><span>Dataset duration</span><span id="diagDatasetDuration">&mdash;</span></div>
+            <div class="diag-row"><span>Replay position / rate</span><span id="diagReplayPos">&mdash;</span></div>
+            <div class="diag-row"><span>Replay parse errors</span><span id="diagReplayErrors">&mdash;</span></div>
+            <div class="diag-row"><span>Recording</span><span id="diagRecording">idle</span></div>
             <div class="diag-row"><span>Last sample age</span><span id="diagLastSample">&mdash;</span></div>
             <div class="diag-row"><span>Last error</span><span id="diagError">&mdash;</span></div>
             <div class="diag-row"><span>Cleanup completed</span><span id="diagCleanup">YES</span></div>
@@ -496,705 +641,556 @@
     </section>
   </main>
 
-  <script>
-    "use strict";
-
-    const BAUD_RATE = 115200;          // ignored by native USB CDC, which runs at USB speed
-    const SERIAL_BUFFER_SIZE = 4096;   // CSI lines are ~1.4 kB, far bigger than the RSSI ones
-    const LINE_BUFFER_LIMIT = 8192;
-    const CLEANUP_TIMEOUT_MS = 2000;
-    const SAMPLE_WARNING_MS = 2000;
-    const BASELINE_MS = 3000;
-
-    // ESP32-S3 HT20: two long-training-field blocks of 64 sub-carriers, each
-    // sub-carrier stored as two signed bytes (imaginary, then real).
-    const SUBCARRIERS_PER_BLOCK = 64;
-    // In a 20 MHz 802.11 channel only indices +/-1..26 carry anything. Index 0
-    // is the DC null and |k|>26 are guard bands, so they are excluded from
-    // normalisation and from the activity number.
-    const USABLE_MIN = 1;
-    const USABLE_MAX = 26;
-
-    const State = {
-      DISCONNECTED: "DISCONNECTED",
-      CONNECTING: "CONNECTING",
-      PORT_OPEN: "PORT OPEN",
-      READING: "READING",
-      STOPPING: "STOPPING",
-      ERROR: "ERROR"
-    };
-
-    const elements = {
-      connectionPill: document.querySelector("#connectionPill"),
-      connectionText: document.querySelector("#connectionText"),
-      rssiValue: document.querySelector("#rssiValue"),
-      rateValue: document.querySelector("#rateValue"),
-      subcarrierValue: document.querySelector("#subcarrierValue"),
-      activityValue: document.querySelector("#activityValue"),
-      channelValue: document.querySelector("#channelValue"),
-      noiseValue: document.querySelector("#noiseValue"),
-      sigModeValue: document.querySelector("#sigModeValue"),
-      lenValue: document.querySelector("#lenValue"),
-      baselineState: document.querySelector("#baselineState"),
-      baselineButton: document.querySelector("#baselineButton"),
-      clearBaselineButton: document.querySelector("#clearBaselineButton"),
-      progressTrack: document.querySelector("#progressTrack"),
-      progressBar: document.querySelector("#progressBar"),
-      connectButton: document.querySelector("#connectButton"),
-      disconnectButton: document.querySelector("#disconnectButton"),
-      statusCard: document.querySelector("#statusCard"),
-      statusMessage: document.querySelector("#statusMessage"),
-      spectrumCanvas: document.querySelector("#spectrumCanvas"),
-      diffCanvas: document.querySelector("#diffCanvas"),
-      diagState: document.querySelector("#diagState"),
-      diagPort: document.querySelector("#diagPort"),
-      diagReader: document.querySelector("#diagReader"),
-      diagLoop: document.querySelector("#diagLoop"),
-      diagSignals: document.querySelector("#diagSignals"),
-      diagBytes: document.querySelector("#diagBytes"),
-      diagLines: document.querySelector("#diagLines"),
-      diagFrames: document.querySelector("#diagFrames"),
-      diagBad: document.querySelector("#diagBad"),
-      diagGaps: document.querySelector("#diagGaps"),
-      diagFirmware: document.querySelector("#diagFirmware"),
-      diagFwi: document.querySelector("#diagFwi"),
-      diagLastSample: document.querySelector("#diagLastSample"),
-      diagError: document.querySelector("#diagError"),
-      diagCleanup: document.querySelector("#diagCleanup")
-    };
-
-    const serialSupported = typeof navigator !== "undefined" && "serial" in navigator;
-
-    let session = null;
-    let sessionCounter = 0;
-    let connectionState = State.DISCONNECTED;
-    let connectionNote = "Connect your ESP32-S3 to begin.";
-    let signalsState = "UNKNOWN";
-    let cleanupCompleted = true;
-    let connectedAt = 0;
-
-    let bytesReceivedTotal = 0;
-    let linesSeenTotal = 0;
-    let lastByteAt = 0;
-    let lastLineAt = 0;
-    let lastRawLine = "";
-    let lastSerialError = "";
-
-    // --- CSI state ---
-    let magnitudes = null;      // normalised magnitude per sub-carrier, natural order
-    let baseline = null;        // averaged normalised magnitude vector
-    let baselineFrames = 0;
-    let baselineAccumulator = null;
-    let isCapturingBaseline = false;
-    let baselineStartedAt = 0;
-    let activity = null;
-    let framesParsed = 0;
-    let malformedLines = 0;
-    let sequenceGaps = 0;
-    let lastSeq = null;
-    let lastFrameAt = 0;
-    let frameTimes = [];
-    let hostRate = 0;
-    let meta = { rssi: null, noise: null, channel: null, sigMode: null, len: null, fwi: null };
-    let firmwareStat = null;
-    let lastPaintAt = 0;
-
-    function resetMeasurements() {
-      magnitudes = null;
-      baseline = null;
-      baselineAccumulator = null;
-      baselineFrames = 0;
-      isCapturingBaseline = false;
-      baselineStartedAt = 0;
-      activity = null;
-      framesParsed = 0;
-      malformedLines = 0;
-      sequenceGaps = 0;
-      lastSeq = null;
-      lastFrameAt = 0;
-      frameTimes.length = 0;
-      hostRate = 0;
-      meta = { rssi: null, noise: null, channel: null, sigMode: null, len: null, fwi: null };
-      firmwareStat = null;
-
-      bytesReceivedTotal = 0;
-      linesSeenTotal = 0;
-      lastByteAt = 0;
-      lastLineAt = 0;
-      lastRawLine = "";
-    }
-
-    function describeError(error) {
-      if (!error) return "Unknown error";
-      return error.message || error.name || String(error);
-    }
-
-    // Resolves to a result object and NEVER rejects or hangs. Cleanup uses this
-    // for every await so a dead USB device cannot wedge the state machine.
-    function settle(promise, timeoutMs) {
-      let timer = null;
-      const timeout = new Promise((resolve) => {
-        timer = setTimeout(() => resolve({ ok: false, timedOut: true }), timeoutMs);
-      });
-      const work = Promise.resolve(promise).then(
-        () => ({ ok: true }),
-        (error) => ({ ok: false, error })
-      );
-      return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
-    }
-
-    function isCurrentSession(candidate) {
-      return session === candidate && !candidate.stopping;
-    }
-
-    function isLive() {
-      return connectionState === State.READING;
-    }
-
-    function isBusy() {
-      return connectionState === State.CONNECTING ||
-             connectionState === State.PORT_OPEN ||
-             connectionState === State.STOPPING;
-    }
-
-    function setState(next) {
-      connectionState = next;
-    }
-
-
-    // ------------------------------------------------------------------
-    // CSI maths
-    // ------------------------------------------------------------------
-
-    // Each sub-carrier arrives as two signed bytes: imaginary first, then real.
-    // Magnitude is just the length of that complex number, sqrt(I^2 + Q^2) -
-    // "how strongly this particular frequency came through".
-    function magnitudeFromPair(imag, real) {
-      return Math.sqrt(imag * imag + real * real);
-    }
-
-    // Array position -> real OFDM sub-carrier index. The hardware stores
-    // 0..31 first and then -32..-1, so position 32 is sub-carrier -32.
-    function subcarrierIndex(position) {
-      return position < 32 ? position : position - 64;
-    }
-
-    function isUsable(index) {
-      const magnitudeOfIndex = Math.abs(index);
-      return magnitudeOfIndex >= USABLE_MIN && magnitudeOfIndex <= USABLE_MAX;
-    }
-
-    // Which array positions actually go into the maths.
+  <script type="module">
+    // -----------------------------------------------------------------------
+    // The dashboard is glue: mode switching, recording, replay transport and
+    // drawing. Every number on screen comes out of csi-core.js, which LIVE and
+    // REPLAY share, so the two modes cannot drift apart.
     //
-    // Position 0 and 1 are always dropped. The hardware can flag the first four
-    // bytes of a frame as invalid, and those four bytes are exactly these two
-    // sub-carriers. If we kept them only when the flag was clear, the frame's
-    // average would jump by a couple of percent every time the flag toggled,
-    // and that jump would look like channel activity. Dropping them from every
-    // frame costs one usable sub-carrier out of 52 and makes all frames
-    // directly comparable.
-    const SKIPPED_LEADING_POSITIONS = 2;
+    // This file is an ES module, so the page must be SERVED over http
+    // (python3 -m http.server 8000), not opened as a file:// URL.
+    // -----------------------------------------------------------------------
+    import {
+      CsiPipeline, TransportReader, ReplayPlayer, DatasetRecorder,
+      MemoryRecordingSink, FileRecordingSink, makeSessionHeader, readDataset,
+      displayOrder, subcarrierIndex, isAnalysed, BASELINE,
+      DEFAULT_TARGET_RATE_HZ, MEMORY_RECORDING_LIMIT_BYTES,
+      APP_VERSION, SCHEMA_VERSION, DATASET_FILE_EXTENSION
+    } from "./csi-core.js";
+    import { SerialLink, LinkState } from "./serial-link.js";
 
-    function isAnalysed(position) {
-      return position >= SKIPPED_LEADING_POSITIONS && isUsable(subcarrierIndex(position));
+    const SAMPLE_WARNING_MS = 2000;
+    const MODE = { LIVE: "live", REPLAY: "replay" };
+
+    const elements = {};
+    for (const node of document.querySelectorAll("[id]")) elements[node.id] = node;
+
+    const pipeline = new CsiPipeline({ targetRateHz: DEFAULT_TARGET_RATE_HZ });
+
+    let mode = MODE.LIVE;
+    let magnitudeMode = "normalised";
+    let transport = null;
+    let sessionStartPerf = 0;
+    let lastInputWallMs = 0;
+    let lastSerialError = "";
+    let firmwareVersion = null;
+    let statusNote = "Connect your ESP32-S3 to begin.";
+    let statusWarning = false;
+
+    let recorder = null;
+    let recordingSinkKind = "";
+    let recordingNote = "";
+
+    let replay = null;
+    let dataset = null;
+    let datasetName = "";
+    let datasetNote = "";
+
+    let lastPaintAt = 0;
+    let lastLoopAt = performance.now();
+
+    // ---- live input -------------------------------------------------------
+
+    function hostNow() {
+      // Milliseconds since this capture session began, to 0.1 ms. The same
+      // number is handed to the pipeline AND written to the dataset, which is
+      // what makes a replay reproduce the live run exactly.
+      return Math.round((performance.now() - sessionStartPerf) * 10) / 10;
     }
 
-    // Pre-computed display order: sub-carrier -32 on the left, +31 on the right.
-    const displayOrder = [];
-    for (let position = 32; position < 64; position += 1) displayOrder.push(position);
-    for (let position = 0; position < 32; position += 1) displayOrder.push(position);
-
-    // Automatic gain control means the absolute CSI scale drifts between
-    // frames. Dividing by the frame's own average cancels that, leaving the
-    // SHAPE across sub-carriers - which is the part multipath actually changes.
-    function normalise(values) {
-      let total = 0;
-      let count = 0;
-      for (let position = 0; position < values.length; position += 1) {
-        if (!isAnalysed(position)) continue;
-        total += values[position];
-        count += 1;
-      }
-      const mean = count > 0 ? total / count : 0;
-      if (!(mean > 0)) return null;
-      return values.map((value) => value / mean);
-    }
-
-    function parseCsiLine(fields) {
-      if (fields.length < 10) return null;
-      const seq = Number(fields[1]);
-      const rssi = Number(fields[2]);
-      const noise = Number(fields[3]);
-      const channel = Number(fields[4]);
-      const sigMode = Number(fields[5]);
-      const firstWordInvalid = Number(fields[7]);
-      const len = Number(fields[8]);
-      if (![seq, rssi, noise, channel, sigMode, firstWordInvalid, len].every(Number.isFinite)) return null;
-      // len counts BYTES; two bytes make one sub-carrier, so it must be even.
-      if (len < 2 || len % 2 !== 0 || len > 1024) return null;
-      const values = fields.slice(9);
-      if (values.length !== len) return null;   // truncated or padded line
-
-      const pairs = len / 2;
-      const raw = new Array(pairs);
-      for (let k = 0; k < pairs; k += 1) {
-        const imag = Number(values[2 * k]);
-        const real = Number(values[2 * k + 1]);
-        if (!Number.isFinite(imag) || !Number.isFinite(real)) return null;
-        raw[k] = magnitudeFromPair(imag, real);
-      }
-
-      // The first four bytes can be flagged invalid by the hardware. Rather
-      // than treat those two sub-carriers differently from frame to frame,
-      // they are always zeroed and always excluded from the maths - see
-      // SKIPPED_LEADING_POSITIONS. The flag itself is still reported so the
-      // Diagnostics panel can show how often it happens.
-      raw[0] = 0;
-      if (pairs > 1) raw[1] = 0;
-
-      return { seq, rssi, noise, channel, sigMode, firstWordInvalid, len, raw };
-    }
-
-    function handleCsiFrame(frame, now) {
-      // Use the LLTF block: it is present in every packet type, so the vector
-      // keeps the same meaning whether the AP replied with 11g or 11n.
-      const block = frame.raw.length >= SUBCARRIERS_PER_BLOCK
-        ? frame.raw.slice(0, SUBCARRIERS_PER_BLOCK)
-        : frame.raw;
-      const normalised = normalise(block);
-      if (normalised === null) { malformedLines += 1; return; }
-
-      if (lastSeq !== null && frame.seq > lastSeq + 1) sequenceGaps += frame.seq - lastSeq - 1;
-      lastSeq = frame.seq;
-
-      magnitudes = normalised;
-      meta = {
-        rssi: frame.rssi, noise: frame.noise, channel: frame.channel,
-        sigMode: frame.sigMode, len: frame.len, fwi: frame.firstWordInvalid
-      };
-      framesParsed += 1;
-      lastFrameAt = now;
-
-      frameTimes.push(now);
-      while (frameTimes.length > 0 && now - frameTimes[0] > 1000) frameTimes.shift();
-      hostRate = frameTimes.length;
-
-      if (isCapturingBaseline) {
-        if (baselineAccumulator === null) baselineAccumulator = new Array(normalised.length).fill(0);
-        if (baselineAccumulator.length === normalised.length) {
-          for (let i = 0; i < normalised.length; i += 1) baselineAccumulator[i] += normalised[i];
-          baselineFrames += 1;
+    function makeTransport() {
+      return new TransportReader({
+        onFrame: (frame) => {
+          frame.nodeId = pipeline.nodeId;
+          frame.linkId = pipeline.linkId;
+          // Record the frame BEFORE analysing it, from the same object, so the
+          // dataset holds precisely what the live pipeline saw.
+          if (recorder) recorder.writeFrame(frame);
+          pipeline.ingestFrame(frame);
+        },
+        onMalformed: (reason, tHostMs) => pipeline.noteMalformed(reason, tHostMs),
+        onStat: (stat, tHostMs) => {
+          pipeline.ingestStat(stat);
+          if (recorder) recorder.writeStat(stat, tHostMs);
+        },
+        onInfo: (info, tHostMs) => {
+          if (info.kind === "node") {
+            pipeline.setIdentity(info.nodeId, `${info.nodeId}-ap`);
+          } else if (info.kind === "link") {
+            pipeline.noteLink(info);
+            if (recorder) recorder.writeEvent("link", tHostMs, info);
+          } else if (info.kind === "firmware") {
+            firmwareVersion = info.version;
+          }
         }
-        if (now - baselineStartedAt >= BASELINE_MS) finishBaseline();
-      }
-
-      if (baseline !== null && baseline.length === normalised.length) {
-        // Mean absolute difference over the usable sub-carriers. This is a
-        // "how much did the channel change" number, not a detector.
-        let total = 0;
-        let count = 0;
-        for (let position = 0; position < normalised.length; position += 1) {
-          if (!isAnalysed(position)) continue;
-          total += Math.abs(normalised[position] - baseline[position]);
-          count += 1;
-        }
-        activity = count > 0 ? total / count : null;
-      }
+      });
     }
 
-    function parseSerialLine(rawLine) {
-      const line = rawLine.trim();
-      if (!line) return;
-      const now = performance.now();
+    const link = new SerialLink({
+      onOpen: () => {
+        // A new physical session never inherits the previous one's baseline.
+        sessionStartPerf = performance.now();
+        transport = makeTransport();
+        pipeline.reset("new serial session");
+        firmwareVersion = null;
+      },
+      onChunk: (chunk) => {
+        lastInputWallMs = performance.now();
+        transport.feed(chunk, hostNow());
+      },
+      onStateChange: (instance) => {
+        statusNote = instance.note;
+        statusWarning = instance.state === LinkState.ERROR;
+        lastSerialError = instance.lastError;
+        if (instance.state === LinkState.DISCONNECTED && recorder) stopRecording();
+      }
+    });
 
-      if (line.startsWith("CSI,")) {
-        const frame = parseCsiLine(line.split(","));
-        if (frame === null) { malformedLines += 1; return; }
-        handleCsiFrame(frame, now);
+    if (link.supported) {
+      navigator.serial.addEventListener("disconnect", (event) => {
+        if (link.session && event.target === link.session.port) {
+          link.lastError = "USB device removed";
+          link.disconnect("The ESP32 was unplugged. Reconnect the cable, then press Connect ESP32.");
+        }
+      });
+    }
+
+    function inputActive() {
+      if (mode === MODE.LIVE) return link.live;
+      return Boolean(replay && replay.playing);
+    }
+
+    function inputFresh(now) {
+      if (mode === MODE.REPLAY) return Boolean(replay && (replay.playing || pipeline.framesProcessed > 0));
+      return link.live && lastInputWallMs > 0 && now - lastInputWallMs < SAMPLE_WARNING_MS;
+    }
+
+    // ---- mode -------------------------------------------------------------
+
+    function setMode(next) {
+      if (mode === next) return;
+      if (recorder) stopRecording();
+      if (mode === MODE.LIVE && link.live) link.disconnect("Switched to replay mode.");
+      mode = next;
+      // Every measurement belongs to one mode. Switching wipes them rather
+      // than letting a live baseline colour a replayed dataset.
+      pipeline.setMode(next === MODE.LIVE ? "live" : "replay");
+      if (next === MODE.LIVE) {
+        replay = null;
+        statusNote = "Live mode. Connect your ESP32-S3 to begin.";
+      } else {
+        if (dataset) loadIntoReplay(dataset);
+        statusNote = dataset ? "Replay mode. Press Play." : "Replay mode. Load a recorded dataset.";
+      }
+      statusWarning = false;
+      render(performance.now());
+    }
+
+    // ---- recording --------------------------------------------------------
+
+    function buildHeader() {
+      return makeSessionHeader({
+        nodeId: pipeline.nodeId,
+        linkId: pipeline.linkId,
+        targetRateHz: pipeline.targetRateHz,
+        appVersion: APP_VERSION,
+        firmware: firmwareVersion,
+        bssid: pipeline.link.bssid,
+        channel: pipeline.link.channel,
+        label: elements.labelInput.value.trim() || null,
+        note: elements.noteInput.value.trim() || null
+      });
+      // Note what is NOT here: the SSID and the Wi-Fi password never leave the
+      // firmware, and never enter a dataset.
+    }
+
+    function suggestedFilename() {
+      const label = (elements.labelInput.value.trim() || "csi").replace(/[^a-z0-9_-]+/gi, "_");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      return `${pipeline.nodeId}_${label}_${stamp}${DATASET_FILE_EXTENSION}`;
+    }
+
+    async function startRecording() {
+      if (recorder) return;
+      const header = buildHeader();
+
+      // Streaming straight to a file keeps nothing in the tab, so a long
+      // capture is limited by disk rather than by RAM. Chrome and Edge have
+      // this API, and they are the browsers Web Serial needs anyway.
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: suggestedFilename(),
+            types: [{ description: "CSI dataset (JSON Lines)", accept: { "application/x-ndjson": [".jsonl"] } }]
+          });
+          const writable = await handle.createWritable();
+          recorder = new DatasetRecorder(new FileRecordingSink(writable), header);
+          recordingSinkKind = "file";
+          recordingNote = "streaming to disk";
+        } catch (error) {
+          if (error && error.name === "AbortError") return;   // the user cancelled
+          recorder = null;
+        }
+      }
+
+      if (!recorder) {
+        recorder = new DatasetRecorder(new MemoryRecordingSink(), header);
+        recordingSinkKind = "memory";
+        recordingNote = `buffered in the tab, limit ${(MEMORY_RECORDING_LIMIT_BYTES / 1048576).toFixed(0)} MB`;
+      }
+      render(performance.now());
+    }
+
+    async function stopRecording() {
+      if (!recorder) return;
+      const finished = recorder;
+      const sink = finished.sink;
+      recorder = null;
+
+      await finished.close();
+      if (sink.kind === "memory") {
+        // Handed over as one Blob built from the ~1 MB chunks, so the file is
+        // never assembled as a single growing string.
+        sink.flushPending();
+        const blob = new Blob(sink.chunks, { type: "application/x-ndjson" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = suggestedFilename();
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }
+      recordingNote = `${finished.frames} frames, ${formatBytes(finished.bytesWritten)}` +
+        (finished.limitReached ? " — stopped at the memory limit" : "");
+      render(performance.now());
+    }
+
+    // ---- replay -----------------------------------------------------------
+
+    function loadIntoReplay(parsed) {
+      pipeline.reset("dataset loaded");
+      pipeline.setTargetRate(parsed.header && parsed.header.target_rate_hz
+        ? parsed.header.target_rate_hz : DEFAULT_TARGET_RATE_HZ);
+      if (parsed.header) pipeline.setIdentity(parsed.header.node_id, parsed.header.link_id);
+      replay = new ReplayPlayer(parsed.frames, {
+        onFrame: (frame) => { lastInputWallMs = performance.now(); pipeline.ingestFrame(frame); },
+        onRestart: () => pipeline.reset("replay restarted"),
+        onEnd: () => { statusNote = "Replay finished. Press Restart to run it again."; }
+      });
+      replay.setRate(Number(elements.speedSelect.value));
+    }
+
+    async function loadDatasetFile(file) {
+      if (!file) return;
+      datasetName = file.name;
+      let text;
+      try {
+        text = await file.text();
+      } catch (error) {
+        statusNote = `Could not read ${file.name}.`;
+        statusWarning = true;
+        render(performance.now());
         return;
       }
+      dataset = readDataset(text);
+      datasetNote = "";
 
-      if (line.startsWith("STAT,")) {
-        const f = line.split(",");
-        if (f.length >= 10) {
-          firmwareStat = { rate: Number(f[2]), emitted: Number(f[3]), dropQueue: Number(f[4]),
-                           dropMac: Number(f[5]), dropSize: Number(f[6]), truncated: Number(f[7]) };
-        }
+      if (dataset.frames.length === 0) {
+        statusWarning = true;
+        statusNote = dataset.errors.length > 0
+          ? `${file.name} contains no readable CSI frames (${dataset.errors.length} bad lines).`
+          : `${file.name} contains no CSI frames.`;
+        replay = null;
+        render(performance.now());
         return;
       }
-      // INFO lines are firmware chatter; keeping the last one aids debugging.
+      if (!dataset.header) {
+        datasetNote = "no session header — schema version unknown";
+      } else if (dataset.header.schema_version !== SCHEMA_VERSION) {
+        datasetNote = `schema v${dataset.header.schema_version}`;
+      }
+
+      loadIntoReplay(dataset);
+      statusWarning = dataset.errors.length > 0;
+      statusNote = `Loaded ${dataset.frames.length} frames from ${file.name}` +
+        (dataset.errors.length ? ` (${dataset.errors.length} lines skipped).` : ".");
+      render(performance.now());
     }
 
-    // ------------------------------------------------------------------
-    // Baseline
-    // ------------------------------------------------------------------
+    // ---- baseline ---------------------------------------------------------
 
     function canCaptureBaseline(now) {
-      return isLive() && !isCapturingBaseline && lastFrameAt !== 0 && now - lastFrameAt < SAMPLE_WARNING_MS;
+      return inputFresh(now) &&
+             pipeline.baselineState !== BASELINE.CAPTURING &&
+             pipeline.lastFrameTs !== null;
     }
 
-    function startBaseline() {
-      const now = performance.now();
-      if (!canCaptureBaseline(now)) return;
-      baseline = null;
-      baselineAccumulator = null;
-      baselineFrames = 0;
-      activity = null;
-      isCapturingBaseline = true;
-      baselineStartedAt = now;
-      updateInterface(now);
-    }
-
-    function finishBaseline() {
-      isCapturingBaseline = false;
-      if (baselineAccumulator === null || baselineFrames < 10) {
-        baseline = null;
-        baselineAccumulator = null;
-        baselineFrames = 0;
-        return;
-      }
-      baseline = baselineAccumulator.map((total) => total / baselineFrames);
-      baselineAccumulator = null;
+    function captureBaseline() {
+      if (!canCaptureBaseline(performance.now())) return;
+      pipeline.armBaseline();
+      if (recorder) recorder.writeEvent("baseline_armed", hostNow());
+      render(performance.now());
     }
 
     function clearBaseline() {
-      baseline = null;
-      baselineAccumulator = null;
-      baselineFrames = 0;
-      isCapturingBaseline = false;
-      activity = null;
-      updateInterface(performance.now());
+      pipeline.clearBaseline();
+      render(performance.now());
     }
 
-    async function runReadLoop(active) {
-      const decoder = new TextDecoder();
-      let lineBuffer = "";
-      let loopError = null;
-      let reader = null;
+    // ---- formatting -------------------------------------------------------
 
-      active.readLoopActive = true;
-      try {
-        if (!active.port.readable) throw new Error("The serial port is not readable.");
-        reader = active.port.readable.getReader();
-        active.reader = reader;
+    const DASH = "—";
 
-        while (isCurrentSession(active)) {
-          const { value, done } = await reader.read();
-          if (done) break; // cancel() was called, or the device closed the stream.
-
-          // A chunk arriving at all proves bytes really reach the browser, which is
-          // the first thing to check when the pipeline looks silent.
-          bytesReceivedTotal += value.byteLength;
-          lastByteAt = performance.now();
-
-          // USB chunks split wherever the OS feels like it, so "RSSI,-57\r\n" can
-          // arrive as "RSS" + "I,-5" + "7\r\n". Only complete lines are parsed; the
-          // leftover waits here for the next chunk.
-          lineBuffer += decoder.decode(value, { stream: true });
-          const lines = lineBuffer.split("\n");
-          lineBuffer = lines.pop() || "";
-          for (const line of lines) {
-            linesSeenTotal += 1;
-            lastLineAt = performance.now();
-            const trimmed = line.trim();
-            if (trimmed) lastRawLine = trimmed;
-            parseSerialLine(line);
-          }
-
-          // Corrupt input without newlines must not grow memory forever.
-          if (lineBuffer.length > LINE_BUFFER_LIMIT) lineBuffer = lineBuffer.slice(-LINE_BUFFER_LIMIT);
-        }
-      } catch (error) {
-        loopError = error;
-      } finally {
-        if (reader) {
-          try { reader.releaseLock(); } catch (releaseError) { /* already released */ }
-          if (active.reader === reader) active.reader = null;
-        }
-        active.readLoopActive = false;
-
-        // Still the current session means the stream ended on its own: unplugged
-        // USB, an ESP32 reset, or a fatal port error. Clean up the same way a
-        // user-pressed Disconnect would, so the next Connect starts from zero.
-        if (isCurrentSession(active)) {
-          if (loopError) lastSerialError = describeError(loopError);
-          teardown(active, loopError
-            ? "Connection lost while reading. Check the USB cable, then press Connect ESP32."
-            : "The ESP32 stopped sending. Press Connect ESP32 to reconnect.");
-        }
-      }
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes)) return DASH;
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} kB`;
+      return `${(bytes / 1048576).toFixed(2)} MB`;
     }
 
-    // ------------------------------------------------------------------
-    // Serial: connect
-    // ------------------------------------------------------------------
-
-    async function connectSerial() {
-      if (!serialSupported) return;
-      // Double clicks, and clicks during teardown, are ignored.
-      if (connectionState !== State.DISCONNECTED && connectionState !== State.ERROR) return;
-
-      setState(State.CONNECTING);
-      lastSerialError = "";
-      signalsState = "UNKNOWN";
-      cleanupCompleted = true;
-      connectionNote = "Choose the ESP32-S3 serial device in the browser prompt.";
-      updateInterface(performance.now());
-
-      // Always ask explicitly. Reusing a port from getPorts() skips the picker and
-      // can hand back a stale device that silently produces zero bytes, so v0
-      // trades that convenience for a connection the user can see happening.
-      let port;
-      try {
-        port = await navigator.serial.requestPort();
-      } catch (error) {
-        // NotFoundError simply means the user closed the picker without choosing.
-        if (error && error.name === "NotFoundError") {
-          connectionNote = "Connection cancelled. Press Connect ESP32 when you are ready.";
-          setState(State.DISCONNECTED);
-        } else {
-          lastSerialError = describeError(error);
-          connectionNote = "The browser refused to open the device picker.";
-          setState(State.ERROR);
-        }
-        updateInterface(performance.now());
-        return;
-      }
-
-      try {
-        await openPort(port);
-      } catch (error) {
-        lastSerialError = describeError(error);
-        await settle(port.close(), CLEANUP_TIMEOUT_MS); // may not even be open; harmless
-        connectionNote = "Could not open the port. Close the PlatformIO Serial Monitor, replug the USB cable, and try again.";
-        setState(State.ERROR);
-        updateInterface(performance.now());
-        return;
-      }
-
-      setState(State.PORT_OPEN);
-      updateInterface(performance.now());
-
-      // The ESP32-S3 native USB port is a CDC device: its USB stack only starts
-      // transmitting once the host raises DTR, which is how it knows a terminal is
-      // listening. Serial monitors do this for you; Web Serial does not, so without
-      // setSignals the port opens perfectly and zero bytes ever arrive.
-      // DTR and RTS are raised together because on boards with a USB-UART bridge
-      // that pair drives the auto-reset circuit, and equal levels mean "no reset".
-      const signalResult = await settle(
-        port.setSignals({ dataTerminalReady: true, requestToSend: true }),
-        CLEANUP_TIMEOUT_MS
-      );
-      if (signalResult.ok) {
-        signalsState = "SET";
-      } else {
-        signalsState = "FAILED";
-        lastSerialError = signalResult.timedOut
-          ? "setSignals timed out (DTR/RTS not applied)"
-          : describeError(signalResult.error);
-      }
-
-      sessionCounter += 1;
-      session = {
-        id: sessionCounter,
-        port,
-        reader: null,
-        readLoopActive: false,
-        stopping: false,
-        done: null
-      };
-      resetMeasurements();
-      connectedAt = performance.now();
-      connectionNote = "Connected. Keep the environment still and press Calibrate.";
-      setState(State.READING);
-      session.done = runReadLoop(session);
-      updateInterface(performance.now());
+    function formatDuration(ms) {
+      if (!Number.isFinite(ms) || ms <= 0) return "0:00";
+      const total = Math.round(ms / 1000);
+      return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
     }
 
-    async function openPort(port) {
-      const options = { baudRate: BAUD_RATE, bufferSize: SERIAL_BUFFER_SIZE };
-      try {
-        await port.open(options);
-      } catch (error) {
-        // A previous cleanup that timed out can leave this exact port open.
-        // Closing and retrying once turns a dead end into a working connection.
-        if (error && error.name === "InvalidStateError") {
-          await settle(port.close(), CLEANUP_TIMEOUT_MS);
-          await port.open(options);
-          return;
-        }
-        throw error;
-      }
+    function magnitudeExplanation() {
+      return magnitudeMode === "raw"
+        ? "Raw magnitude keeps the frame's absolute amplitude, so it shows gain and amplitude changes — but it is also moved by the receiver's automatic gain control, which is not the room."
+        : "Normalised magnitude divides each frame by its own mean, which suppresses common scaling (including AGC) and emphasises the shape across sub-carriers. Neither view is universally correct.";
     }
 
-    // ------------------------------------------------------------------
-    // Serial: disconnect / cleanup
-    // ------------------------------------------------------------------
+    // ---- rendering --------------------------------------------------------
 
-    // The one place resources are released. Idempotent, bounded at every step, and
-    // it always ends with the references cleared even if the hardware misbehaves.
-    async function teardown(target, note) {
-      const active = target || session;
-      if (!active || active.stopping) return;      // repeated Disconnect clicks are safe
-      if (session !== active) return;              // a stale session cannot tear down a live one
-
-      active.stopping = true;                      // invalidates the read loop immediately
-      setState(State.STOPPING);
-      cleanupCompleted = false;
-      connectionNote = "Disconnecting…";
-      updateInterface(performance.now());
-
-      let clean = true;
-
-      // 1. Cancel the reader so a pending read() resolves instead of hanging forever.
-      if (active.reader) {
-        const cancelled = await settle(active.reader.cancel(), CLEANUP_TIMEOUT_MS);
-        if (!cancelled.ok) clean = false;
+    function vectors() {
+      const baseline = pipeline.baseline;
+      if (magnitudeMode === "raw") {
+        return { now: pipeline.rawVector, base: baseline ? baseline.raw : null, floor: 1 };
       }
-
-      // 2. Wait for the read loop to actually leave, so it cannot touch state later.
-      //    Skipped when teardown was called from inside that loop's own finally.
-      if (active.done && active.readLoopActive) {
-        const finished = await settle(active.done, CLEANUP_TIMEOUT_MS);
-        if (!finished.ok) clean = false;
-      }
-
-      // 3. The loop releases its own lock; this only covers the case where it hung.
-      if (active.reader) {
-        try { active.reader.releaseLock(); } catch (error) { /* already released */ }
-        active.reader = null;
-      }
-
-      // 4. Drop DTR/RTS so the ESP32's USB stack sees the host detach.
-      await settle(active.port.setSignals({ dataTerminalReady: false, requestToSend: false }), CLEANUP_TIMEOUT_MS);
-
-      // 5. Close the port. This is what actually releases the device to other apps.
-      const closed = await settle(active.port.close(), CLEANUP_TIMEOUT_MS);
-      if (!closed.ok) {
-        clean = false;
-        lastSerialError = closed.timedOut ? "port.close() timed out" : describeError(closed.error);
-      }
-
-      session = null;
-      cleanupCompleted = clean;
-      resetMeasurements();
-      connectionNote = note || "Disconnected. Press Connect ESP32 when you are ready.";
-      setState(State.DISCONNECTED);
-      updateInterface(performance.now());
+      return { now: pipeline.normVector, base: baseline ? baseline.norm : null, floor: 1.2 };
     }
 
-
-    // ------------------------------------------------------------------
-    // Interface
-    // ------------------------------------------------------------------
-
-    function setStatus(message, detail, warning = false) {
-      elements.statusCard.classList.toggle("warning", warning);
+    function setStatus(message, detail, warning) {
+      elements.statusCard.classList.toggle("warning", Boolean(warning));
       elements.statusMessage.textContent = message;
-      const detailElement = document.createElement("span");
-      detailElement.className = "status-detail";
-      detailElement.textContent = detail;
-      elements.statusMessage.append(detailElement);
+      const span = document.createElement("span");
+      span.className = "status-detail";
+      span.textContent = detail;
+      elements.statusMessage.append(span);
     }
 
-    function displayState(now) {
-      if (connectionState !== State.READING) return connectionState;
-      if (lastFrameAt && now - lastFrameAt < SAMPLE_WARNING_MS) return "STREAMING";
-      return State.READING;
+    function renderStatus(now) {
+      const fresh = inputFresh(now);
+      if (mode === MODE.REPLAY) {
+        if (!dataset || !replay) {
+          setStatus("Replay mode.", "Load a .jsonl dataset recorded in live mode — no ESP32 required.", statusWarning);
+        } else if (pipeline.baselineState === BASELINE.CAPTURING) {
+          setStatus("Capturing baseline from the dataset…", "Keep playing; pausing now will fail the capture.");
+        } else if (pipeline.baselineState === BASELINE.FAILED) {
+          setStatus("Baseline not usable.", pipeline.baselineReason, true);
+        } else {
+          setStatus(statusNote, `${replay.progress().index} of ${replay.count} frames · ${datasetName}`, statusWarning);
+        }
+        return;
+      }
+
+      if (!link.supported) {
+        setStatus("Web Serial is not supported in this browser.", "Open this page in desktop Chrome or Edge at localhost.", true);
+      } else if (link.busy) {
+        setStatus(statusNote, "Please wait a moment.");
+      } else if (!link.live) {
+        setStatus(statusNote, "Close any open Serial Monitor, then press Connect ESP32 and pick the device.", statusWarning);
+      } else if (pipeline.lastFrameTs === null) {
+        const waited = performance.now() - sessionStartPerf > 10000;
+        setStatus(waited ? "No CSI frames received yet." : "Connected. Waiting for CSI frames…",
+          waited ? "Open Diagnostics: if Lines received is growing but CSI frames stays 0, the firmware is not producing CSI — check that it joined Wi-Fi."
+                 : "The ESP32 is joining Wi-Fi and starting the ping stream.", waited);
+      } else if (!fresh) {
+        setStatus("CSI frames have stopped.", "Check Wi-Fi and USB. The firmware retries automatically.", true);
+      } else if (pipeline.baselineState === BASELINE.CAPTURING) {
+        setStatus("Capturing baseline… keep everything still.",
+                  "Averaging the channel for 3 seconds: no walking, and do not move the phone or the board.");
+      } else if (pipeline.baselineState === BASELINE.FAILED) {
+        setStatus("Baseline not usable.", `${pipeline.baselineReason}. Press Capture baseline to try again.`, true);
+      } else if (pipeline.baselineState === BASELINE.NONE) {
+        setStatus("Streaming CSI. Capture a baseline to see changes.", "Keep the room still, then press Capture baseline.");
+      } else {
+        setStatus("Baseline captured — now walk through the link.",
+                  "The lower graph shows how each sub-carrier differs from the still room.");
+      }
     }
 
-    function updateDiagnostics(now) {
-      const port = session ? session.port : null;
-      elements.diagState.textContent = displayState(now);
-      elements.diagPort.textContent = port ? "YES" : "NO";
-      elements.diagReader.textContent = session && session.reader ? "YES" : "NO";
-      elements.diagLoop.textContent = session && session.readLoopActive ? "YES" : "NO";
-      elements.diagSignals.textContent = signalsState;
-      elements.diagBytes.textContent = String(bytesReceivedTotal);
-      elements.diagLines.textContent = String(linesSeenTotal);
-      elements.diagFrames.textContent = String(framesParsed);
-      elements.diagBad.textContent = String(malformedLines);
-      elements.diagGaps.textContent = String(sequenceGaps);
-      elements.diagFirmware.textContent = firmwareStat
-        ? `${firmwareStat.rate.toFixed(1)}/s, q${firmwareStat.dropQueue} m${firmwareStat.dropMac} t${firmwareStat.truncated}`
-        : "\u2014";
-      elements.diagFwi.textContent = meta.fwi === null ? "\u2014" : (meta.fwi ? "YES" : "no");
-      elements.diagLastSample.textContent = lastFrameAt ? `${Math.round(now - lastFrameAt)} ms` : "\u2014";
-      elements.diagError.textContent = lastSerialError || "\u2014";
-      elements.diagCleanup.textContent = cleanupCompleted ? "YES" : "NO";
+    function renderDiagnostics(now, snapshot) {
+      const diag = link.diagnostics();
+      const measures = snapshot.measures;
+      const espStat = snapshot.espStat;
+
+      elements.diagMode.textContent = mode.toUpperCase();
+      elements.diagState.textContent = mode === MODE.REPLAY
+        ? (replay ? (replay.playing ? "PLAYING" : (replay.finished ? "FINISHED" : "PAUSED")) : "NO DATASET")
+        : (link.live && inputFresh(now) ? "STREAMING" : diag.state);
+      elements.diagIdentity.textContent = `${snapshot.nodeId} / ${snapshot.linkId}`;
+      elements.diagQuality.textContent = `${snapshot.quality.level} — ${snapshot.quality.reason}`;
+      elements.diagPort.textContent = diag.port ? "YES" : "NO";
+      elements.diagReader.textContent = diag.reader ? "YES" : "NO";
+      elements.diagLoop.textContent = diag.readLoopActive ? "YES" : "NO";
+      elements.diagSignals.textContent = diag.signals;
+      elements.diagBytes.textContent = transport ? String(transport.bytes) : "0";
+      elements.diagLines.textContent = transport ? String(transport.lines) : "0";
+      elements.diagReceived.textContent = String(snapshot.counters.framesReceived);
+      elements.diagFrames.textContent = String(snapshot.counters.framesProcessed);
+      elements.diagBad.textContent = String(snapshot.counters.malformed);
+      const reasons = Object.entries(snapshot.counters.malformedByReason);
+      elements.diagBadReasons.textContent = reasons.length
+        ? reasons.map(([reason, count]) => `${reason}×${count}`).join(", ") : DASH;
+      elements.diagOther.textContent = transport
+        ? `${transport.unknownLines} / ${transport.infoLines}` : "0 / 0";
+      elements.diagGaps.textContent = String(snapshot.counters.sequenceGaps);
+      elements.diagDropped.textContent = String(snapshot.counters.estimatedDropped);
+      elements.diagDupes.textContent = `${snapshot.counters.duplicates} / ${snapshot.counters.sequenceResets}`;
+      elements.diagRate.textContent = `${snapshot.rate.toFixed(1)} /s`;
+      elements.diagMeanRate.textContent = `${snapshot.meanRate.toFixed(1)} /s`;
+      elements.diagJitter.textContent = measures.frames > 2 ? measures.jitter.toFixed(2) : DASH;
+      elements.diagQueueDrops.textContent = espStat ? String(espStat.dropQueue) : DASH;
+      elements.diagMacDrops.textContent = espStat ? String(espStat.dropMac) : DASH;
+      elements.diagSizeDrops.textContent = espStat ? String(espStat.dropSize) : DASH;
+      elements.diagUsb.textContent = espStat ? `${espStat.truncated} / ${espStat.dropUsbBusy}` : DASH;
+      elements.diagHeap.textContent = espStat && Number.isFinite(espStat.freeHeap)
+        ? `${(espStat.freeHeap / 1024).toFixed(0)} kB` : DASH;
+      elements.diagRestarts.textContent = String(snapshot.espStatResets);
+      elements.diagClip.textContent = snapshot.clipping.total > 0
+        ? `${(snapshot.clipping.fraction * 100).toFixed(2)}% of ${snapshot.clipping.total} samples` : DASH;
+      elements.diagBaseline.textContent = snapshot.baselineState +
+        (snapshot.baselineReason ? ` (${snapshot.baselineReason})` : "") +
+        (snapshot.baselineState === BASELINE.READY ? ` · ${snapshot.baselineFrames} frames` : "");
+
+      if (dataset) {
+        elements.diagDatasetFrames.textContent = String(dataset.frames.length);
+        elements.diagDatasetDuration.textContent = formatDuration(dataset.durationMs);
+        const errors = Object.entries(dataset.errorsByReason);
+        elements.diagReplayErrors.textContent = errors.length
+          ? errors.map(([reason, count]) => `${reason}×${count}`).join(", ") : "0";
+      } else {
+        elements.diagDatasetFrames.textContent = DASH;
+        elements.diagDatasetDuration.textContent = DASH;
+        elements.diagReplayErrors.textContent = DASH;
+      }
+      elements.diagReplayPos.textContent = replay
+        ? `${replay.progress().index}/${replay.count} @ ${replay.rate}×` : DASH;
+      elements.diagRecording.textContent = recorder
+        ? `${recordingSinkKind}: ${recorder.frames} frames, ${formatBytes(recorder.bytesWritten)}`
+        : (recordingNote || "idle");
+      elements.diagLastSample.textContent = lastInputWallMs
+        ? `${Math.round(now - lastInputWallMs)} ms` : DASH;
+      elements.diagError.textContent = lastSerialError || DASH;
+      elements.diagCleanup.textContent = diag.cleanupCompleted ? "YES" : "NO";
     }
 
-    function updateInterface(now) {
-      updateDiagnostics(now);
-      const live = isLive();
-      const busy = isBusy();
-      const fresh = live && lastFrameAt && now - lastFrameAt < SAMPLE_WARNING_MS;
+    function renderControls(now, snapshot) {
+      const isLive = mode === MODE.LIVE;
+      elements.modeLiveButton.setAttribute("aria-pressed", String(isLive));
+      elements.modeReplayButton.setAttribute("aria-pressed", String(!isLive));
+      elements.liveControls.classList.toggle("hidden", !isLive);
+      elements.replayControls.classList.toggle("hidden", isLive);
 
-      elements.connectionPill.classList.toggle("connected", Boolean(fresh));
-      elements.connectionText.textContent = busy
-        ? (connectionState === State.STOPPING ? "Disconnecting\u2026" : "Connecting\u2026")
-        : (live ? (fresh ? "Streaming" : "No CSI") : "Disconnected");
+      elements.magNormalisedButton.setAttribute("aria-pressed", String(magnitudeMode === "normalised"));
+      elements.magRawButton.setAttribute("aria-pressed", String(magnitudeMode === "raw"));
+      elements.magnitudeNote.textContent = magnitudeExplanation();
 
-      elements.rssiValue.textContent = meta.rssi === null ? "\u2014" : String(meta.rssi);
-      elements.rateValue.textContent = hostRate.toFixed(1);
-      elements.subcarrierValue.textContent = magnitudes === null ? "\u2014" : String(magnitudes.length);
-      elements.activityValue.textContent = activity === null ? "\u2014" : activity.toFixed(3);
-      elements.channelValue.textContent = meta.channel === null ? "\u2014" : String(meta.channel);
-      elements.noiseValue.textContent = meta.noise === null ? "\u2014" : `${meta.noise} dBm`;
-      elements.sigModeValue.textContent = meta.sigMode === null
-        ? "\u2014" : (meta.sigMode === 1 ? "HT (11n)" : "non-HT (11b/g)");
-      elements.lenValue.textContent = meta.len === null ? "\u2014" : `${meta.len} bytes`;
+      elements.connectButton.disabled = !link.supported || link.live || link.busy;
+      elements.disconnectButton.disabled = !link.live;
+      elements.recordButton.disabled = !link.live;
+      elements.recordButton.dataset.recording = String(Boolean(recorder));
+      elements.recordButton.innerHTML = recorder
+        ? '<span class="recording-dot"></span>Stop recording'
+        : "Start recording";
+      elements.labelInput.disabled = Boolean(recorder);
+      elements.noteInput.disabled = Boolean(recorder);
+      elements.recordingState.textContent = recorder
+        ? `${recorder.frames} frames` : (recordingNote ? "Saved" : "Idle");
+      elements.recordingSize.textContent = recorder
+        ? `${formatBytes(recorder.bytesWritten)} · ${recordingNote}` : (recordingNote || DASH);
+
+      const hasFrames = Boolean(replay && replay.count > 0);
+      elements.playButton.disabled = !hasFrames || replay.playing;
+      elements.pauseButton.disabled = !hasFrames || !replay.playing;
+      elements.restartButton.disabled = !hasFrames;
+      elements.stepButton.disabled = !hasFrames || replay.finished;
+      elements.replayBaselineButton.disabled = !canCaptureBaseline(now);
+      elements.replayClearBaselineButton.disabled = snapshot.baselineState === BASELINE.NONE;
+      if (hasFrames) {
+        const progress = replay.progress();
+        const fraction = progress.durationMs > 0 ? progress.virtualMs / progress.durationMs : (progress.finished ? 1 : 0);
+        elements.replayScrub.style.width = `${Math.min(100, Math.max(0, fraction * 100))}%`;
+        elements.replayPosition.textContent = `${progress.index} / ${progress.count}`;
+        elements.replayMeta.textContent =
+          `${formatDuration(progress.virtualMs)} / ${formatDuration(progress.durationMs)} · ${progress.rate}×` +
+          (datasetNote ? ` · ${datasetNote}` : "");
+      } else {
+        elements.replayScrub.style.width = "0%";
+        elements.replayPosition.textContent = "No dataset";
+        elements.replayMeta.textContent = DASH;
+      }
+
+      elements.baselineButton.disabled = !canCaptureBaseline(now);
+      elements.baselineButton.textContent = snapshot.baselineState === BASELINE.CAPTURING
+        ? "Capturing…" : (snapshot.baselineState === BASELINE.READY ? "Re-capture" : "Capture baseline");
+      elements.clearBaselineButton.disabled = snapshot.baselineState === BASELINE.NONE;
+    }
+
+    function render(now) {
+      const snapshot = pipeline.snapshot();
+      const fresh = inputFresh(now);
+
+      elements.connectionPill.classList.toggle("connected", fresh);
+      elements.connectionText.textContent = mode === MODE.REPLAY
+        ? (replay ? (replay.playing ? "Replaying" : "Replay paused") : "No dataset")
+        : (link.busy ? (link.state === LinkState.STOPPING ? "Disconnecting…" : "Connecting…")
+                     : (link.live ? (fresh ? "Streaming" : "No CSI") : "Disconnected"));
+
+      const quality = snapshot.quality;
+      elements.qualityBadge.className = `quality-badge ${quality.level.toLowerCase()}`;
+      elements.qualityLevel.textContent = quality.level;
+      elements.qualityReason.textContent = quality.reason;
+
+      elements.rssiValue.textContent = snapshot.meta.rssi === null ? DASH : String(snapshot.meta.rssi);
+      elements.rateValue.textContent = snapshot.rate.toFixed(1);
+      elements.rateSub.textContent = `target ${pipeline.targetRateHz} Hz · mean ${snapshot.meanRate.toFixed(1)}`;
+      elements.subcarrierValue.textContent = snapshot.normalised === null ? DASH : String(snapshot.normalised.length);
+      elements.activityValue.textContent = snapshot.activity === null ? DASH : snapshot.activity.toFixed(3);
+      elements.channelValue.textContent = snapshot.meta.channel === null ? DASH : String(snapshot.meta.channel);
+      elements.noiseValue.textContent = snapshot.meta.noise === null ? DASH : `${snapshot.meta.noise} dBm`;
+      elements.sigModeValue.textContent = snapshot.meta.sigMode === null
+        ? DASH : (snapshot.meta.sigMode === 1 ? "HT (11n)" : "non-HT (11b/g)");
+      elements.lenValue.textContent = snapshot.meta.len === null ? DASH : `${snapshot.meta.len} bytes`;
+      elements.clipValue.textContent = snapshot.clipping.total === 0
+        ? DASH
+        : `${(snapshot.clipping.fraction * 100).toFixed(2)}%${snapshot.clipping.potential ? " — check" : ""}`;
+      elements.linkIdentity.textContent = `${snapshot.nodeId} · ${snapshot.linkId}`;
 
       let progress = 0;
-      if (isCapturingBaseline) {
-        progress = Math.min(100, ((now - baselineStartedAt) / BASELINE_MS) * 100);
+      if (snapshot.baselineState === BASELINE.CAPTURING) {
+        const start = snapshot.captureStartTs;
+        progress = start === null ? 0
+          : Math.min(100, ((snapshot.lastFrameTs - start) / pipeline.baselineMs) * 100);
         elements.baselineState.textContent = `Capturing ${Math.round(progress)}%`;
-      } else if (baseline !== null) {
+      } else if (snapshot.baselineState === BASELINE.READY) {
         progress = 100;
-        elements.baselineState.textContent = `${baselineFrames} frames`;
+        elements.baselineState.textContent = `${snapshot.baselineFrames} frames`;
+      } else if (snapshot.baselineState === BASELINE.FAILED) {
+        elements.baselineState.textContent = "Failed";
       } else {
         elements.baselineState.textContent = "Not captured";
       }
       elements.progressBar.style.width = `${progress}%`;
       elements.progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
 
-      elements.connectButton.disabled = !serialSupported || live || busy;
-      elements.disconnectButton.disabled = !live;
-      elements.baselineButton.disabled = !canCaptureBaseline(now);
-      elements.baselineButton.textContent = isCapturingBaseline
-        ? "Capturing\u2026" : (baseline === null ? "Capture baseline" : "Re-capture");
-      elements.clearBaselineButton.disabled = baseline === null && !isCapturingBaseline;
-
-      if (!serialSupported) {
-        setStatus("Web Serial is not supported in this browser.", "Open this page in desktop Chrome or Edge at localhost.", true);
-      } else if (busy) {
-        setStatus(connectionNote, "Please wait a moment.");
-      } else if (!live) {
-        setStatus(connectionNote, "Close any open Serial Monitor, then press Connect ESP32 and pick the device.",
-                  connectionState === State.ERROR);
-      } else if (!lastFrameAt) {
-        const waited = now - connectedAt > 10000;
-        setStatus(waited ? "No CSI frames received yet." : "Connected. Waiting for CSI frames\u2026",
-                  waited ? "Open Diagnostics: if Lines received is growing but CSI frames stays 0, the firmware is not producing CSI \u2014 check that it joined Wi-Fi."
-                         : "The ESP32 is joining Wi-Fi and starting the ping stream.",
-                  waited);
-      } else if (!fresh) {
-        setStatus("CSI frames have stopped.", "Check Wi-Fi and USB. The firmware retries automatically.", true);
-      } else if (isCapturingBaseline) {
-        setStatus("Capturing baseline\u2026 keep everything still.",
-                  "Averaging the channel for 3 seconds: no walking, and do not move the phone or the board.");
-      } else if (baseline === null) {
-        setStatus("Streaming CSI. Capture a baseline to see changes.",
-                  "Keep the room still, then press Capture baseline.");
-      } else {
-        setStatus("Baseline captured \u2014 now walk through the link.",
-                  "The lower graph shows how each sub-carrier differs from the still room.");
-      }
+      renderControls(now, snapshot);
+      renderDiagnostics(now, snapshot);
+      renderStatus(now);
     }
 
-    // ------------------------------------------------------------------
-    // Drawing
-    // ------------------------------------------------------------------
+    // ---- drawing ----------------------------------------------------------
 
     function prepareCanvas(canvas) {
       const rect = canvas.getBoundingClientRect();
@@ -1229,7 +1225,7 @@
       });
     }
 
-    function drawAxis(context, xFor, left, width, top, graphHeight, barWidth) {
+    function drawAxis(context, xFor, top, graphHeight, barWidth) {
       context.font = "10px ui-sans-serif, system-ui, sans-serif";
       context.fillStyle = "rgba(145, 164, 187, 0.7)";
       context.textAlign = "center";
@@ -1248,16 +1244,21 @@
       const graphHeight = height - top - bottom;
       if (graphHeight <= 0 || graphWidth <= 0) return;
 
-      if (magnitudes === null) { drawEmpty(context, width, height, "Sub-carrier magnitudes will appear here"); return; }
+      const view = vectors();
+      if (view.now === null) {
+        drawEmpty(context, width, height, mode === MODE.REPLAY
+          ? "Load a dataset and press Play" : "Sub-carrier magnitudes will appear here");
+        return;
+      }
 
-      const slots = Math.min(displayOrder.length, magnitudes.length);
+      const slots = Math.min(displayOrder.length, view.now.length);
       const barWidth = graphWidth / slots;
       const xFor = (slot) => left + slot * barWidth;
 
       let peak = 0;
-      for (let i = 0; i < magnitudes.length; i += 1) peak = Math.max(peak, magnitudes[i]);
-      if (baseline) for (let i = 0; i < baseline.length; i += 1) peak = Math.max(peak, baseline[i]);
-      const maxValue = Math.max(1.2, peak * 1.1);
+      for (let i = 0; i < view.now.length; i += 1) peak = Math.max(peak, view.now[i]);
+      if (view.base) for (let i = 0; i < view.base.length; i += 1) peak = Math.max(peak, view.base[i]);
+      const maxValue = Math.max(view.floor, peak * 1.1);
       const yFor = (value) => top + graphHeight - (Math.min(value, maxValue) / maxValue) * graphHeight;
 
       shadeNullRegions(context, xFor, top, graphHeight, barWidth);
@@ -1274,33 +1275,26 @@
         context.lineTo(width - right, y);
         context.stroke();
         context.fillStyle = "rgba(145, 164, 187, 0.7)";
-        context.fillText(value.toFixed(1), left - 6, y);
+        context.fillText(maxValue >= 10 ? value.toFixed(0) : value.toFixed(1), left - 6, y);
       }
 
-      if (baseline) {
+      const trace = (values, stroke, lineWidth) => {
         context.beginPath();
         displayOrder.slice(0, slots).forEach((position, slot) => {
-          const y = yFor(baseline[position]);
+          const y = yFor(values[position]);
           if (slot === 0) context.moveTo(xFor(slot) + barWidth / 2, y);
           else context.lineTo(xFor(slot) + barWidth / 2, y);
         });
-        context.strokeStyle = "rgba(145, 164, 187, 0.75)";
-        context.lineWidth = 1.3;
+        context.strokeStyle = stroke;
+        context.lineWidth = lineWidth;
+        context.lineJoin = "round";
         context.stroke();
-      }
+      };
 
-      context.beginPath();
-      displayOrder.slice(0, slots).forEach((position, slot) => {
-        const y = yFor(magnitudes[position]);
-        if (slot === 0) context.moveTo(xFor(slot) + barWidth / 2, y);
-        else context.lineTo(xFor(slot) + barWidth / 2, y);
-      });
-      context.strokeStyle = "#5ab5ff";
-      context.lineWidth = 1.9;
-      context.lineJoin = "round";
-      context.stroke();
+      if (view.base && view.base.length === view.now.length) trace(view.base, "rgba(145, 164, 187, 0.75)", 1.3);
+      trace(view.now, "#5ab5ff", 1.9);
 
-      drawAxis(context, xFor, left, width, top, graphHeight, barWidth);
+      drawAxis(context, xFor, top, graphHeight, barWidth);
     }
 
     function drawDifference() {
@@ -1310,21 +1304,22 @@
       const graphHeight = height - top - bottom;
       if (graphHeight <= 0 || graphWidth <= 0) return;
 
-      if (magnitudes === null || baseline === null || baseline.length !== magnitudes.length) {
-        drawEmpty(context, width, height, baseline === null
+      const view = vectors();
+      if (view.now === null || view.base === null || view.base.length !== view.now.length) {
+        drawEmpty(context, width, height, view.base === null
           ? "Capture a baseline to see the change"
           : "Waiting for matching CSI frames");
         return;
       }
 
-      const slots = Math.min(displayOrder.length, magnitudes.length);
+      const slots = Math.min(displayOrder.length, view.now.length);
       const barWidth = graphWidth / slots;
       const xFor = (slot) => left + slot * barWidth;
 
-      let peak = 0.05;
-      for (let position = 0; position < magnitudes.length; position += 1) {
+      let peak = magnitudeMode === "raw" ? 1 : 0.05;
+      for (let position = 0; position < view.now.length; position += 1) {
         if (!isAnalysed(position)) continue;
-        peak = Math.max(peak, Math.abs(magnitudes[position] - baseline[position]));
+        peak = Math.max(peak, Math.abs(view.now[position] - view.base[position]));
       }
       const maxValue = peak * 1.15;
       const middle = top + graphHeight / 2;
@@ -1342,13 +1337,14 @@
       context.textBaseline = "middle";
       context.font = "10px ui-sans-serif, system-ui, sans-serif";
       context.fillStyle = "rgba(145, 164, 187, 0.7)";
-      context.fillText(`+${maxValue.toFixed(2)}`, left - 6, top + 6);
+      const label = maxValue >= 10 ? maxValue.toFixed(0) : maxValue.toFixed(2);
+      context.fillText(`+${label}`, left - 6, top + 6);
       context.fillText("0", left - 6, middle);
-      context.fillText(`-${maxValue.toFixed(2)}`, left - 6, top + graphHeight - 6);
+      context.fillText(`-${label}`, left - 6, top + graphHeight - 6);
 
       displayOrder.slice(0, slots).forEach((position, slot) => {
         if (!isAnalysed(position)) return;
-        const difference = magnitudes[position] - baseline[position];
+        const difference = view.now[position] - view.base[position];
         const y = yFor(difference);
         const intensity = Math.min(1, Math.abs(difference) / maxValue);
         context.fillStyle = difference >= 0
@@ -1359,16 +1355,23 @@
                          Math.max(1, barWidth * 0.7), Math.max(1, barHeight));
       });
 
-      drawAxis(context, xFor, left, width, top, graphHeight, barWidth);
+      drawAxis(context, xFor, top, graphHeight, barWidth);
     }
 
+    // ---- main loop --------------------------------------------------------
+
     function animationLoop(now) {
-      if (isCapturingBaseline && now - baselineStartedAt >= BASELINE_MS + 1000) {
-        // Safety net: if frames stopped mid-capture, do not hang forever.
-        finishBaseline();
-      }
+      const delta = now - lastLoopAt;
+      lastLoopAt = now;
+
+      if (mode === MODE.REPLAY && replay) replay.advance(delta);
+
+      // The only wall-clock decision in the whole pipeline: a capture that can
+      // never complete because the input died must fail rather than hang.
+      pipeline.tickWatchdog(now, lastInputWallMs, inputActive());
+
       if (now - lastPaintAt >= 80) {
-        updateInterface(now);
+        render(now);
         drawSpectrum();
         drawDifference();
         lastPaintAt = now;
@@ -1376,26 +1379,43 @@
       requestAnimationFrame(animationLoop);
     }
 
-    // ------------------------------------------------------------------
-    // Wiring
-    // ------------------------------------------------------------------
+    // ---- wiring -----------------------------------------------------------
 
-    elements.connectButton.addEventListener("click", connectSerial);
-    elements.disconnectButton.addEventListener("click", () => teardown(session, null));
-    elements.baselineButton.addEventListener("click", startBaseline);
+    elements.modeLiveButton.addEventListener("click", () => setMode(MODE.LIVE));
+    elements.modeReplayButton.addEventListener("click", () => setMode(MODE.REPLAY));
+    elements.magNormalisedButton.addEventListener("click", () => { magnitudeMode = "normalised"; render(performance.now()); });
+    elements.magRawButton.addEventListener("click", () => { magnitudeMode = "raw"; render(performance.now()); });
+
+    elements.connectButton.addEventListener("click", () => link.connect());
+    elements.disconnectButton.addEventListener("click", () => link.disconnect());
+    elements.recordButton.addEventListener("click", () => (recorder ? stopRecording() : startRecording()));
+    elements.baselineButton.addEventListener("click", captureBaseline);
     elements.clearBaselineButton.addEventListener("click", clearBaseline);
+    elements.replayBaselineButton.addEventListener("click", captureBaseline);
+    elements.replayClearBaselineButton.addEventListener("click", clearBaseline);
 
-    if (serialSupported) {
-      navigator.serial.addEventListener("disconnect", (event) => {
-        if (session && event.target === session.port) {
-          lastSerialError = "USB device removed";
-          teardown(session, "The ESP32 was unplugged. Reconnect the cable, then press Connect ESP32.");
-        }
-      });
-    }
+    elements.loadButton.addEventListener("click", () => elements.datasetInput.click());
+    elements.datasetInput.addEventListener("change", (event) => {
+      loadDatasetFile(event.target.files && event.target.files[0]);
+      event.target.value = "";
+    });
+    elements.playButton.addEventListener("click", () => { if (replay) { replay.play(); statusNote = "Replaying."; } });
+    elements.pauseButton.addEventListener("click", () => { if (replay) replay.pause(); });
+    elements.restartButton.addEventListener("click", () => { if (replay) replay.restart(); });
+    elements.stepButton.addEventListener("click", () => { if (replay) replay.step(); });
+    elements.speedSelect.addEventListener("change", (event) => {
+      const rate = Number(event.target.value);
+      if (replay) replay.setRate(rate);
+    });
 
-    updateInterface(performance.now());
+    // A recording in progress when the tab closes would otherwise be lost.
+    window.addEventListener("beforeunload", (event) => {
+      if (recorder) { event.preventDefault(); event.returnValue = ""; }
+    });
+
+    render(performance.now());
     requestAnimationFrame(animationLoop);
   </script>
+
 </body>
 </html>
