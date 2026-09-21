@@ -19,6 +19,12 @@ Wi-Fi → ESP32-S3 CSI → USB Serial → Browser → sub-carrier magnitudes →
 > automated tests, but no frame from a real radio has been observed yet. Nothing in this
 > repository should be read as evidence that CSI sensing works physically.
 
+**Working on this repository?** Start with **[AGENTS.md](AGENTS.md)**, then
+[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) (what is true now),
+[docs/ROADMAP.md](docs/ROADMAP.md) (where it is going),
+[docs/EXPERIMENT_PROTOCOL.md](docs/EXPERIMENT_PROTOCOL.md) (how experiments are run) and
+[docs/PROGRESS_LOG.md](docs/PROGRESS_LOG.md) (what happened so far).
+
 ## RSSI vs CSI
 
 **RSSI** is *one* number per packet: total received power. It is a summary — everything

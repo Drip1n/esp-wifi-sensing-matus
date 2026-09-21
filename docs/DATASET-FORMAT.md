@@ -119,4 +119,4 @@ Measured on 256-byte CSI frames, per line including the newline:
 
 The dashboard's in-tab fallback buffer stops at **24 MB**, which is 14–21 minutes at 20 Hz
 depending on the data. Recording straight to a file has no such limit — see
-[the README](../README.md#recording-a-dataset).
+[the README](../README.md#2-recording-a-dataset).
