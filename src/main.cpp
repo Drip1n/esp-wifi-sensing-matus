@@ -1,60 +1,51 @@
 #include <Arduino.h>
-#include <Adafruit_NeoPixel.h>
+#include <WiFi.h>
+#include "esp_wifi.h"
 
-// Väčšina ESP32-S3 N16R8 má RGB LED na pine 48 (ak by nesvietila, skús zmeniť na 38)
-#define RGB_PIN    48
-#define NUM_PIXELS 1
+// Funkcia na zachytávanie CSI rámcov
+void _wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *data) {
+  if (!data || !data->buf) return;
 
-Adafruit_NeoPixel rgb(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
-
-void setColor(uint8_t r, uint8_t g, uint8_t b) {
-  rgb.setPixelColor(0, rgb.Color(r, g, b));
-  rgb.show();
+  Serial.printf("CSI_DATA,%d,%d", data->len, data->rx_ctrl.rssi);
+  int8_t *csi_raw = (int8_t *)data->buf;
+  for (int i = 0; i < data->len; i++) {
+    Serial.printf(",%d", csi_raw[i]);
+  }
+  Serial.println();
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(2000); // Čas na inicializáciu USB
+  delay(1000);
 
-  Serial.println("--- ESP32-S3 RGB LED Test ---");
+  Serial.println("\n\n================================");
+  Serial.println(">>> ESP32-S3 USPESNE NASTARTOVANE <<<");
+  Serial.println("================================");
 
-  rgb.begin();
-  rgb.setBrightness(40); // Jas (0 až 255) – 40 je dosť silné, aby to neoslepovalo
-  rgb.clear();
-  rgb.show();
+  // Spustíme Wi-Fi v režime AP (prístupový bod), aby doska sama generovala sieť
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("ESP32_RADAR", "12345678", 1); // Vysiela na kanáli 1
+
+  wifi_csi_config_t csi_config = {
+    .lltf_en = true,
+    .htltf_en = true,
+    .stbc_htltf2_en = true,
+    .ltf_merge_en = true,
+    .channel_filter_en = false,
+    .manu_scale = false,
+    .shift = false,
+  };
+
+  ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));
+  ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(_wifi_csi_rx_cb, NULL));
+  ESP_ERROR_CHECK(esp_wifi_set_csi(true));
+
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+
+  Serial.println(">>> ESP32-S3 CSI bezi na sieti ESP32_RADAR <<<");
 }
 
 void loop() {
-  // 1. Červená
-  Serial.println("Farba: CERVENA");
-  setColor(255, 0, 0);
-  delay(1000);
-
-  // 2. Zelená
-  Serial.println("Farba: ZELENA");
-  setColor(0, 255, 0);
-  delay(1000);
-
-  // 3. Modrá
-  Serial.println("Farba: MODRA");
-  setColor(0, 0, 255);
-  delay(1000);
-
-  // 4. Biela
-  Serial.println("Farba: BIELA");
-  setColor(255, 255, 255);
-  delay(1000);
-
-  // 5. Plynulý dúhový prechod (Rainbow)
-  Serial.println("Efekt: DUHA (Rainbow)");
-  for (long firstPixelHue = 0; firstPixelHue < 65536; firstPixelHue += 256) {
-    rgb.rainbow(firstPixelHue);
-    rgb.show();
-    delay(10);
-  }
-
-  // Krátke zhasnutie pred novým cyklom
-  rgb.clear();
-  rgb.show();
-  delay(500);
+  delay(100);
 }
